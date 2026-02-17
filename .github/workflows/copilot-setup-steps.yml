@@ -376,6 +376,9 @@ integrations:
       class SecurityError(Exception):
           pass
       
+      # Initialize client first
+      tenet = TenetClient()
+      
       # Example usage
       class MyAIAgent:
           def __init__(self, tenet_client: TenetClient):
@@ -393,8 +396,6 @@ integrations:
               """Execute action - protected by TENET"""
               return {"status": "success", "action": action}
       
-      # Initialize
-      tenet = TenetClient()
       agent = MyAIAgent(tenet_client=tenet)
       
       # Run agent
