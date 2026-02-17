@@ -40,6 +40,15 @@ except ImportError:
 # ─────────────────────────────────────────────
 class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
+        """
+        Format a LogRecord into a JSON string representing a structured log entry.
+        
+        Parameters:
+            record (logging.LogRecord): The log record to serialize.
+        
+        Returns:
+            json_entry (str): JSON string containing keys `timestamp`, `level`, `service`, `version`, `logger`, and `message`; includes an `exception` field when the record has exception info and includes any of `event_id`, `verdict`, `threat_type`, or `method` when those attributes are present on the record.
+        """
         entry = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "level":     record.levelname,
@@ -102,6 +111,15 @@ class CircuitBreaker:
         recovery_timeout:  float = CB_RECOVERY_TIMEOUT_S,
         half_open_max_calls: int = CB_HALF_OPEN_MAX_CALLS,
     ):
+        """
+        Initialize a CircuitBreaker with configuration for failure counting and recovery behaviour.
+        
+        Parameters:
+            name (str): Identifier for this circuit breaker instance.
+            failure_threshold (int): Number of consecutive failures required to open the circuit.
+            recovery_timeout (float): Seconds to wait after opening before allowing probing (half-open) attempts.
+            half_open_max_calls (int): Maximum concurrent requests allowed while in the half-open state.
+        """
         self.name                = name
         self.failure_threshold   = failure_threshold
         self.recovery_timeout    = recovery_timeout
@@ -115,10 +133,27 @@ class CircuitBreaker:
 
     @property
     def state(self) -> CircuitState:
+        """
+        Get the circuit breaker's current state.
+        
+        Returns:
+            CircuitState: The current circuit state: CLOSED, OPEN, or HALF_OPEN.
+        """
         return self._state
 
     @property
     def is_open(self) -> bool:
+        """
+        Check whether the circuit breaker is currently open (blocking requests).
+        
+        If the circuit has been OPEN for at least `recovery_timeout`, transition it to HALF_OPEN,
+        reset the half-open call counter, and log the transition; in that case this method reports
+        that the circuit is not open.
+        
+        Returns:
+            `True` if the circuit is open and should block requests, `False` otherwise (including when
+            the circuit was transitioned to HALF_OPEN).
+        """
         if self._state == CircuitState.OPEN:
             if time.monotonic() - self._last_failure_ts >= self.recovery_timeout:
                 self._state           = CircuitState.HALF_OPEN
@@ -129,6 +164,17 @@ class CircuitBreaker:
         return False
 
     def allow_request(self) -> bool:
+        """
+        Decide whether the circuit breaker currently permits a request.
+        
+        Covers all circuit states:
+        - CLOSED: permits requests.
+        - OPEN: denies requests unless the circuit's open-state allowance permits a retry.
+        - HALF_OPEN: permits up to `half_open_max_calls` requests; when permitting, increments the internal half-open call counter. Once the limit is reached, denies further requests.
+        
+        Returns:
+            True if a request is permitted, False otherwise.
+        """
         if self._state == CircuitState.CLOSED:
             return True
         if self._state == CircuitState.OPEN:
@@ -141,6 +187,11 @@ class CircuitBreaker:
         return False
 
     async def record_success(self):
+        """
+        Mark a successful operation on the circuit breaker, resetting its failure count and ensuring the circuit is closed.
+        
+        If the circuit was in HALF_OPEN before this call, a recovery event is logged indicating the circuit transitioned to CLOSED.
+        """
         async with self._lock:
             if self._state in (CircuitState.HALF_OPEN, CircuitState.CLOSED):
                 self._state         = CircuitState.CLOSED
@@ -149,6 +200,11 @@ class CircuitBreaker:
                     logger.info(f"Circuit breaker [{self.name}] → CLOSED (recovered)")
 
     async def record_failure(self):
+        """
+        Record a failure occurrence for the circuit and update its state if needed.
+        
+        Increments the consecutive failure counter and updates the last-failure timestamp. If the circuit is in HALF_OPEN this marks the probe as failed and moves the circuit to OPEN; if the consecutive failure count reaches or exceeds the configured threshold the circuit is moved to OPEN. When the circuit transitions to OPEN an error-level log entry is emitted.
+        """
         async with self._lock:
             self._failure_count  += 1
             self._last_failure_ts = time.monotonic()
@@ -218,7 +274,17 @@ class HealthResponse(BaseModel):
 # Redis Helper
 # ─────────────────────────────────────────────
 async def redis_call(coro):
-    """Execute Redis coro with timeout + circuit breaker. Returns None on any failure."""
+    """
+    Execute a Redis coroutine with enforced timeout and circuit-breaker protection.
+    
+    If the global Redis client is unavailable or the Redis circuit disallows requests, returns None immediately. The function records circuit-breaker success on a successful call and records a failure when the call times out or raises an exception.
+    
+    Parameters:
+        coro (Awaitable): A Redis coroutine to await (e.g., client.ping(), client.get(...)).
+    
+    Returns:
+        The result produced by the Redis coroutine, or `None` if Redis is unavailable, the circuit prevents the call, the call times out, or an error occurs.
+    """
     if not redis_client or not redis_cb.allow_request():
         return None
     try:
@@ -240,6 +306,11 @@ async def redis_call(coro):
 # ─────────────────────────────────────────────
 @app.on_event("startup")
 async def startup():
+    """
+    Initialize runtime resources and start background tasks for the analyzer service.
+    
+    Attempts to connect to Redis and assigns the global `redis_client` if successful; failure is non-fatal and leaves the service running in degraded mode. Attempts to load ML artifacts and assigns the global `ml_model` and `vectorizer` if present; ML load failure is non-fatal and the service falls back to heuristic-only detection. Starts background workers (event queue processor and Redis reconnection loop) and registers signal handlers that set `_shutdown_event` on SIGTERM or SIGINT to enable graceful shutdown.
+    """
     global redis_client, ml_model, vectorizer
 
     # Redis — non-fatal
@@ -297,6 +368,11 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    """
+    Signal the application to shut down and close the Redis client if connected.
+    
+    Sets the internal shutdown event to initiate graceful shutdown. If a Redis client exists, attempts to close its connection, suppresses any exceptions raised during close, and logs when the Redis connection has been closed.
+    """
     _shutdown_event.set()
     if redis_client:
         try:
@@ -307,6 +383,11 @@ async def shutdown():
 
 
 async def _redis_reconnect_loop():
+    """
+    Periodically probes Redis to detect recovery and update the global Redis client and circuit-breaker state.
+    
+    This background loop runs until shutdown and, on a regular interval, attempts a lightweight probe when the Redis circuit is not CLOSED. If a Redis client does not exist it will create one, then ping Redis; a successful probe records a circuit success and preserves the client, while a failed probe records a circuit failure.
+    """
     global redis_client
     while not _shutdown_event.is_set():
         await asyncio.sleep(CB_RECOVERY_TIMEOUT_S)
@@ -333,6 +414,18 @@ async def _redis_reconnect_loop():
 # Auth
 # ─────────────────────────────────────────────
 def verify_api_key(x_api_key: str = Header(...)):
+    """
+    Validate the X-API-Key header against the configured API key.
+    
+    Parameters:
+        x_api_key (str): The value of the incoming X-API-Key header.
+    
+    Returns:
+        str: The validated API key.
+    
+    Raises:
+        HTTPException: If the provided API key does not match the configured API_KEY (status 401).
+    """
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return x_api_key
@@ -343,6 +436,19 @@ def verify_api_key(x_api_key: str = Header(...)):
 # ─────────────────────────────────────────────
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
+    """
+    Return the service health report including Redis connectivity, model load state, circuit state, and uptime.
+    
+    Returns:
+        HealthResponse: Object with:
+            - status: "healthy" if Redis is reachable and the ML model is loaded, "degraded" otherwise.
+            - service: service name ("analyzer").
+            - version: service version string.
+            - model_loaded: `True` if an ML model is loaded, `False` otherwise.
+            - redis_connected: `True` if Redis ping succeeded, `False` otherwise.
+            - circuit_state: string value of the Redis circuit breaker state.
+            - uptime_seconds: seconds since service start, rounded to one decimal place.
+    """
     redis_ok = await redis_call(redis_client.ping()) if redis_client else None
     return HealthResponse(
         status="healthy" if redis_ok and ml_model else "degraded",
@@ -360,12 +466,33 @@ async def analyze_prompt(
     request: AnalysisRequest,
     x_api_key: str = Header(...)
 ):
+    """
+    Analyze a prompt and produce a structured risk assessment.
+    
+    Parameters:
+        request (AnalysisRequest): Payload containing the prompt to analyze and optional context.
+    
+    Returns:
+        AnalysisResponse: Result with fields including `risk_score`, `verdict`, optional `threat_type`, `confidence`, and `details`.
+    """
     verify_api_key(x_api_key)
     return await run_analysis(request.prompt)
 
 
 @app.get("/v1/circuit-status")
 async def circuit_status(x_api_key: str = Header(...)):
+    """
+    Expose Redis circuit breaker status and metrics for the analyzer service.
+    
+    Returns:
+        dict: Mapping with keys:
+            - service (str): service name ("analyzer").
+            - circuit (str): circuit name ("redis").
+            - state (str): circuit state value, e.g. "CLOSED", "OPEN", or "HALF_OPEN".
+            - failure_count (int): current consecutive failure count for the circuit.
+            - recovery_timeout (float): configured recovery timeout in seconds.
+            - timestamp (str): ISO8601 UTC timestamp indicating when the snapshot was taken.
+    """
     verify_api_key(x_api_key)
     return {
         "service":          "analyzer",
@@ -382,8 +509,12 @@ async def circuit_status(x_api_key: str = Header(...)):
 # ─────────────────────────────────────────────
 async def run_analysis(prompt: str) -> AnalysisResponse:
     """
-    Run full analysis. Always returns a result — never raises.
-    Degrades gracefully: heuristic → ML → combined.
+    Perform prompt safety analysis using heuristics, optionally augmenting with ML, and return a single consolidated verdict.
+    
+    Decision summary: if heuristic detection is strongly high the heuristic result is returned; if an ML model is available and indicates prompt injection above the configured threshold the ML result is returned; moderate heuristic signals yield a `suspicious` response recommending manual review; otherwise a combined benign result is returned. The function never raises; on internal errors it returns a conservative `suspicious` fallback with `details.method` set to `"error_fallback"`.
+    
+    Returns:
+        AnalysisResponse: AnalysisOutcome containing `risk_score`, `verdict`, optional `threat_type`, `confidence`, and `details` describing the analysis method and metadata.
     """
     try:
         heuristic = heuristic_analysis(prompt)
@@ -449,6 +580,19 @@ async def run_analysis(prompt: str) -> AnalysisResponse:
 
 
 def heuristic_analysis(prompt: str) -> dict:
+    """
+    Identify prompt-injection, jailbreak, and data-extraction indicators in a prompt and produce a simple heuristic risk assessment.
+    
+    Parameters:
+        prompt (str): The input text to analyze for malicious or suspicious patterns.
+    
+    Returns:
+        dict: A dictionary with the following keys:
+            - risk_score (float): Highest matched pattern score between 0.0 and 1.0.
+            - verdict (str): One of "malicious" (risk_score > 0.8), "suspicious" (risk_score > 0.5), or "benign".
+            - threat_type (str | None): Category of the highest-scoring match ("prompt_injection", "jailbreak", "data_extraction") or None if no match.
+            - patterns (list[str]): List of matched pattern strings found in the prompt.
+    """
     prompt_lower = prompt.lower()
     matched, max_score, threat_type = [], 0.0, None
 
@@ -502,7 +646,21 @@ def heuristic_analysis(prompt: str) -> dict:
 
 
 def ml_analysis(prompt: str) -> dict:
-    """ML analysis — returns safe fallback dict on any error, never raises."""
+    """
+    Run ML-based analysis of a prompt and produce structured risk metrics.
+    
+    If the ML model or vectorizer is not loaded, returns a default "unknown" result. On any internal error, returns a safe fallback with zero risk and verdict "error".
+    
+    Parameters:
+        prompt (str): The input prompt to analyze.
+    
+    Returns:
+        dict: Analysis result with the following keys:
+            - risk_score (float): Probability of malicious/prompt-injection behavior (0.0–1.0).
+            - verdict (str): One of "malicious", "suspicious", "benign", "unknown", or "error".
+            - threat_type (str|None): Identified threat category (e.g., "prompt_injection") or None if not applicable.
+            - confidence (float): Model confidence (highest class probability, 0.0–1.0).
+    """
     global ml_model, vectorizer
     if not ml_model or not vectorizer:
         return {"risk_score": 0.0, "verdict": "unknown", "threat_type": None, "confidence": 0.0}
@@ -534,12 +692,14 @@ def ml_analysis(prompt: str) -> dict:
 # ─────────────────────────────────────────────
 async def process_event_queue():
     """
-    Continuously drain tenet:events:queue from Redis.
-
-    Graceful degradation:
-    - If Redis is unavailable, waits and retries with exponential backoff.
-    - Never crashes the service — logs errors and continues.
-    - Respects _shutdown_event for clean exit.
+    Continuously process events from the Redis work queue and persist analysis results.
+    
+    This coroutine:
+    - Reads raw events from the Redis list "tenet:events:queue", decodes each event JSON, and runs analysis.
+    - Updates the event with analysis fields (risk_score, verdict, threat_type, analysis_details, analysed_at) and stores it at key "tenet:event:{event_id}" with a 86400-second TTL.
+    - Pushes events with verdict "malicious" onto the "tenet:alerts" list.
+    - When Redis is unavailable or the Redis circuit is open, retries with exponential backoff bounded by QUEUE_MAX_BACKOFF_S.
+    - Respects the module-level _shutdown_event to exit cleanly and guards the loop so unexpected errors do not stop the processor.
     """
     backoff_s = QUEUE_IDLE_SLEEP_S
     logger.info("Queue processor started")
