@@ -22,7 +22,7 @@ from enum import Enum
 from typing import Optional
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import redis.asyncio as redis
@@ -131,7 +131,7 @@ class CircuitBreaker:
         self._half_open_calls   = 0
         self._lock              = asyncio.Lock()
 
-    @property
+    `@property`
     def state(self) -> CircuitState:
         """
         Get the circuit breaker's current state.
@@ -141,27 +141,38 @@ class CircuitBreaker:
         """
         return self._state
 
-    @property
+    `@property`
     def is_open(self) -> bool:
         """
         Check whether the circuit breaker is currently open (blocking requests).
         
-        If the circuit has been OPEN for at least `recovery_timeout`, transition it to HALF_OPEN,
-        reset the half-open call counter, and log the transition; in that case this method reports
-        that the circuit is not open.
+        This property does not modify state; use try_transition_to_half_open() for state transitions.
         
         Returns:
-            `True` if the circuit is open and should block requests, `False` otherwise (including when
-            the circuit was transitioned to HALF_OPEN).
+            `True` if the circuit is open and should block requests, `False` otherwise.
         """
         if self._state == CircuitState.OPEN:
+            # Check if recovery timeout has elapsed, but don't modify state here
             if time.monotonic() - self._last_failure_ts >= self.recovery_timeout:
-                self._state           = CircuitState.HALF_OPEN
-                self._half_open_calls = 0
-                logger.info(f"Circuit breaker [{self.name}] → HALF_OPEN")
-                return False
+                return False  # Allow one probe
             return True
         return False
+
+    async def try_transition_to_half_open(self) -> bool:
+        """
+        Thread-safe state transition from OPEN to HALF_OPEN.
+        
+        Returns:
+            True if the transition occurred, False otherwise.
+        """
+        async with self._lock:
+            if (self._state == CircuitState.OPEN and 
+                time.monotonic() - self._last_failure_ts >= self.recovery_timeout):
+                self._state = CircuitState.HALF_OPEN
+                self._half_open_calls = 0
+                logger.info(f"Circuit breaker [{self.name}] → HALF_OPEN")
+                return True
+            return False
 
     def allow_request(self) -> bool:
         """
@@ -193,10 +204,11 @@ class CircuitBreaker:
         If the circuit was in HALF_OPEN before this call, a recovery event is logged indicating the circuit transitioned to CLOSED.
         """
         async with self._lock:
+            was_half_open = (self._state == CircuitState.HALF_OPEN)
             if self._state in (CircuitState.HALF_OPEN, CircuitState.CLOSED):
                 self._state         = CircuitState.CLOSED
                 self._failure_count = 0
-                if self._state == CircuitState.HALF_OPEN:
+                if was_half_open:
                     logger.info(f"Circuit breaker [{self.name}] → CLOSED (recovered)")
 
     async def record_failure(self):
@@ -242,13 +254,14 @@ ml_model                               = None
 vectorizer                             = None
 _shutdown_event: asyncio.Event         = asyncio.Event()
 _start_time = time.monotonic()
+_redis_lock = asyncio.Lock()  # Protect global redis_client modifications
 
 
 # ─────────────────────────────────────────────
 # Pydantic Models
 # ─────────────────────────────────────────────
 class AnalysisRequest(BaseModel):
-    prompt:  str           = Field(..., description="Prompt to analyse")
+    prompt:  str           = Field(..., description="Prompt to analyze")
     context: Optional[str] = Field(None)
 
 
@@ -304,7 +317,7 @@ async def redis_call(coro):
 # ─────────────────────────────────────────────
 # Startup / Shutdown
 # ─────────────────────────────────────────────
-@app.on_event("startup")
+`@app.on_event`("startup")
 async def startup():
     """
     Initialize runtime resources and start background tasks for the analyzer service.
@@ -332,8 +345,10 @@ async def startup():
         )
         redis_client = None
 
-    # ML Models — non-fatal
-    if _ml_imports_ok:
+    # ML Models — non-fatal, check imports first
+    if not _ml_imports_ok:
+        logger.warning("joblib/numpy not installed — ML detection disabled.")
+    else:
         try:
             model_dir       = Path(MODEL_PATH)
             model_file      = model_dir / "prompt_detector.joblib"
@@ -350,30 +365,46 @@ async def startup():
                 )
         except Exception as exc:
             logger.error(f"Failed to load ML models ({exc}). Falling back to heuristics.")
-    else:
-        logger.warning("joblib/numpy not installed — ML detection disabled.")
 
     # Background tasks
     asyncio.create_task(process_event_queue())
     asyncio.create_task(_redis_reconnect_loop())
 
+    # Signal handlers with logging for unsupported platforms
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
             asyncio.get_event_loop().add_signal_handler(
                 sig, lambda: _shutdown_event.set()
             )
         except NotImplementedError:
-            pass
+            logger.warning(
+                f"Signal handler for {sig.name} not available on this platform. "
+                "Graceful shutdown via signals will not work."
+            )
 
 
-@app.on_event("shutdown")
+`@app.on_event`("shutdown")
 async def shutdown():
     """
     Signal the application to shut down and close the Redis client if connected.
     
-    Sets the internal shutdown event to initiate graceful shutdown. If a Redis client exists, attempts to close its connection, suppresses any exceptions raised during close, and logs when the Redis connection has been closed.
+    Sets the internal shutdown event to initiate graceful shutdown. Waits for background 
+    tasks to complete with a timeout. If a Redis client exists, attempts to close its 
+    connection, suppresses any exceptions raised during close, and logs when the Redis 
+    connection has been closed.
     """
     _shutdown_event.set()
+    
+    # Give background tasks time to complete
+    logger.info("Waiting for background tasks to complete...")
+    try:
+        await asyncio.wait_for(
+            asyncio.sleep(5),  # Grace period
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Graceful shutdown timeout exceeded")
+    
     if redis_client:
         try:
             await redis_client.close()
@@ -392,22 +423,23 @@ async def _redis_reconnect_loop():
     while not _shutdown_event.is_set():
         await asyncio.sleep(CB_RECOVERY_TIMEOUT_S)
         if redis_cb.state != CircuitState.CLOSED:
-            try:
-                if redis_client is None:
-                    redis_client = redis.Redis(
-                        host=REDIS_HOST,
-                        port=REDIS_PORT,
-                        decode_responses=True,
-                        socket_connect_timeout=REDIS_TIMEOUT_S,
-                        socket_timeout=REDIS_TIMEOUT_S,
-                        retry_on_timeout=False,
-                    )
-                await asyncio.wait_for(redis_client.ping(), timeout=REDIS_TIMEOUT_S)
-                await redis_cb.record_success()
-                logger.info("Redis reconnection probe succeeded")
-            except Exception as exc:
-                logger.debug(f"Redis reconnection probe failed: {exc}")
-                await redis_cb.record_failure()
+            async with _redis_lock:  # Protect global modification
+                try:
+                    if redis_client is None:
+                        redis_client = redis.Redis(
+                            host=REDIS_HOST,
+                            port=REDIS_PORT,
+                            decode_responses=True,
+                            socket_connect_timeout=REDIS_TIMEOUT_S,
+                            socket_timeout=REDIS_TIMEOUT_S,
+                            retry_on_timeout=False,
+                        )
+                    await asyncio.wait_for(redis_client.ping(), timeout=REDIS_TIMEOUT_S)
+                    await redis_cb.record_success()
+                    logger.info("Redis reconnection probe succeeded")
+                except Exception as exc:
+                    logger.debug(f"Redis reconnection probe failed: {exc}")
+                    await redis_cb.record_failure()
 
 
 # ─────────────────────────────────────────────
@@ -434,7 +466,7 @@ def verify_api_key(x_api_key: str = Header(...)):
 # ─────────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────────
-@app.get("/health", response_model=HealthResponse)
+`@app.get`("/health", response_model=HealthResponse)
 async def health_check():
     """
     Return the service health report including Redis connectivity, model load state, circuit state, and uptime.
@@ -461,10 +493,10 @@ async def health_check():
     )
 
 
-@app.post("/v1/analyze", response_model=AnalysisResponse)
+`@app.post`("/v1/analyze", response_model=AnalysisResponse)
 async def analyze_prompt(
     request: AnalysisRequest,
-    x_api_key: str = Header(...)
+    x_api_key: str = Depends(verify_api_key)  # Use FastAPI dependency injection
 ):
     """
     Analyze a prompt and produce a structured risk assessment.
@@ -475,12 +507,11 @@ async def analyze_prompt(
     Returns:
         AnalysisResponse: Result with fields including `risk_score`, `verdict`, optional `threat_type`, `confidence`, and `details`.
     """
-    verify_api_key(x_api_key)
     return await run_analysis(request.prompt)
 
 
-@app.get("/v1/circuit-status")
-async def circuit_status(x_api_key: str = Header(...)):
+`@app.get`("/v1/circuit-status")
+async def circuit_status(x_api_key: str = Depends(verify_api_key)):  # Use FastAPI dependency injection
     """
     Expose Redis circuit breaker status and metrics for the analyzer service.
     
@@ -493,7 +524,6 @@ async def circuit_status(x_api_key: str = Header(...)):
             - recovery_timeout (float): configured recovery timeout in seconds.
             - timestamp (str): ISO8601 UTC timestamp indicating when the snapshot was taken.
     """
-    verify_api_key(x_api_key)
     return {
         "service":          "analyzer",
         "circuit":          "redis",
@@ -696,7 +726,7 @@ async def process_event_queue():
     
     This coroutine:
     - Reads raw events from the Redis list "tenet:events:queue", decodes each event JSON, and runs analysis.
-    - Updates the event with analysis fields (risk_score, verdict, threat_type, analysis_details, analysed_at) and stores it at key "tenet:event:{event_id}" with a 86400-second TTL.
+    - Updates the event with analysis fields (risk_score, verdict, threat_type, analysis_details, analyzed_at) and stores it at key "tenet:event:{event_id}" with a 86400-second TTL.
     - Pushes events with verdict "malicious" onto the "tenet:alerts" list.
     - When Redis is unavailable or the Redis circuit is open, retries with exponential backoff bounded by QUEUE_MAX_BACKOFF_S.
     - Respects the module-level _shutdown_event to exit cleanly and guards the loop so unexpected errors do not stop the processor.
@@ -705,10 +735,10 @@ async def process_event_queue():
     logger.info("Queue processor started")
 
     while not _shutdown_event.is_set():
-        # If circuit is open, back off and wait
-        if not redis_client or redis_cb.state == CircuitState.OPEN:
+        # Use allow_request() for consistency
+        if not redis_client or not redis_cb.allow_request():
             logger.warning(
-                f"Queue processor paused — Redis circuit OPEN. "
+                f"Queue processor paused — Redis unavailable. "
                 f"Retrying in {backoff_s:.0f}s"
             )
             await asyncio.sleep(min(backoff_s, QUEUE_MAX_BACKOFF_S))
@@ -739,12 +769,12 @@ async def process_event_queue():
             result = await run_analysis(event.get("prompt", ""))
 
             event.update({
-                "analysed":         True,
+                "analyzed":         True,
                 "risk_score":       result.risk_score,
                 "verdict":          result.verdict,
                 "threat_type":      result.threat_type,
                 "analysis_details": result.details,
-                "analysed_at":      datetime.utcnow().isoformat() + "Z",
+                "analyzed_at":      datetime.utcnow().isoformat() + "Z",
             })
 
             stored = await redis_call(
