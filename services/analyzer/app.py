@@ -83,7 +83,7 @@ _DEFAULT_KEY                = "tenet-dev-key-change-in-production"
 if API_KEY == _DEFAULT_KEY:
     logger.warning(
         "API_KEY is using the insecure default value."
-        "Set the API_KEY environment variable before deploying to production
+        "Set the API_KEY environment variable before deploying to production"
     )
     
 MODEL_PATH                  = os.getenv("MODEL_PATH", "./models/trained")
