@@ -294,22 +294,19 @@ class HealthResponse(BaseModel):
 # ─────────────────────────────────────────────
 # Redis Helper
 # ─────────────────────────────────────────────
-async def redis_call(coro):
+async def redis_call(fn, *args, **kwargs):
     """
-    Execute a Redis coroutine with enforced timeout and circuit-breaker protection.
-    
-    If the global Redis client is unavailable or the Redis circuit disallows requests, returns None immediately. The function records circuit-breaker success on a successful call and records a failure when the call times out or raises an exception.
-    
-    Parameters:
-        coro (Awaitable): A Redis coroutine to await (e.g., client.ping(), client.get(...)).
-    
-    Returns:
-        The result produced by the Redis coroutine, or `None` if Redis is unavailable, the circuit prevents the call, the call times out, or an error occurs.
+    Execute a Redis coroutine with  timeout and circuit-breaker protection.
+     + circuit breaker. Returns None on any failure.
     """
     if not redis_client or not redis_cb.allow_request():
         return None
+    if redis_cb.state == CircuitState.OPEN:
+        await redis_cb.try_transition_to_half_open()
+    if not redis_cb.allow_request():
+        return None
     try:
-        result = await asyncio.wait_for(coro, timeout=REDIS_TIMEOUT_S)
+        result = await asyncio.wait_for(fn(*args, **kwargs), timeout=REDIS_TIMEOUT_S)
         await redis_cb.record_success()
         return result
     except asyncio.TimeoutError:
@@ -375,9 +372,13 @@ async def startup():
             logger.error(f"Failed to load ML models ({exc}). Falling back to heuristics.")
 
     # Background tasks
-    asyncio.create_task(process_event_queue())
-    asyncio.create_task(_redis_reconnect_loop())
+    _background_tasks: set = set()
 
+    #in startup()
+    for coro in (process_event_queue(), _redis_reconnect_loop()):
+        task = asyncio.create_task(coro)
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
     # Signal handlers with logging for unsupported platforms
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -416,9 +417,9 @@ async def shutdown():
     if redis_client:
         try:
             await redis_client.close()
+            logger.info("Redis connection closed")
         except Exception:
-            pass
-        logger.info("Redis connection closed")
+        logger.debug("Redis close failed during shutdown", exc_info=True)
 
 
 async def _redis_reconnect_loop():
@@ -443,6 +444,8 @@ async def _redis_reconnect_loop():
                             retry_on_timeout=False,
                         )
                     await asyncio.wait_for(redis_client.ping(), timeout=REDIS_TIMEOUT_S)
+                    if redis_cb.state == CircuitState.OPEN:
+                        await redis_cb.try_transition_to_half_open()
                     await redis_cb.record_success()
                     logger.info("Redis reconnection probe succeeded")
                 except Exception as exc:
@@ -643,7 +646,7 @@ def heuristic_analysis(prompt: str) -> dict:
             "override system":              0.85,
             "</s>":                         0.90,
             "<|system|>":                   0.95,
-            "\\n\\n###":                    0.80,
+            "\n\n###":                      0.80,
         },
         "jailbreak": {
             "do anything now":          0.90,
