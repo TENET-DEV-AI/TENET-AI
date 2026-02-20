@@ -79,6 +79,13 @@ REDIS_TIMEOUT_S             = float(os.getenv("REDIS_TIMEOUT_S", 2.0))
 API_HOST                    = os.getenv("API_HOST", "0.0.0.0")
 API_PORT                    = int(os.getenv("API_PORT", 8100))
 API_KEY                     = os.getenv("API_KEY", "tenet-dev-key-change-in-production")
+_DEFAULT_KEY                = "tenet-dev-key-change-in-production"
+if API_KEY == _DEFAULT_KEY:
+    logger.warning(
+        "API_KEY is using the insecure default value."
+        "Set the API_KEY environment variable before deploying to production
+    )
+    
 MODEL_PATH                  = os.getenv("MODEL_PATH", "./models/trained")
 PROMPT_INJECTION_THRESHOLD  = float(os.getenv("PROMPT_INJECTION_THRESHOLD", 0.75))
 QUEUE_IDLE_SLEEP_S          = float(os.getenv("QUEUE_IDLE_SLEEP_S", 1.0))
@@ -189,7 +196,8 @@ class CircuitBreaker:
         if self._state == CircuitState.CLOSED:
             return True
         if self._state == CircuitState.OPEN:
-            return not self.is_open
+            if self.is_open:
+                return False #Just transitioned to HALF_OPEN
         if self._state == CircuitState.HALF_OPEN:
             if self._half_open_calls < self.half_open_max_calls:
                 self._half_open_calls += 1
