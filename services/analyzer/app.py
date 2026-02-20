@@ -131,7 +131,7 @@ class CircuitBreaker:
         self._half_open_calls   = 0
         self._lock              = asyncio.Lock()
 
-    `@property`
+    @property
     def state(self) -> CircuitState:
         """
         Get the circuit breaker's current state.
@@ -141,7 +141,7 @@ class CircuitBreaker:
         """
         return self._state
 
-    `@property`
+    @property
     def is_open(self) -> bool:
         """
         Check whether the circuit breaker is currently open (blocking requests).
@@ -317,7 +317,7 @@ async def redis_call(coro):
 # ─────────────────────────────────────────────
 # Startup / Shutdown
 # ─────────────────────────────────────────────
-`@app.on_event`("startup")
+@app.on_event("startup")
 async def startup():
     """
     Initialize runtime resources and start background tasks for the analyzer service.
@@ -383,7 +383,7 @@ async def startup():
             )
 
 
-`@app.on_event`("shutdown")
+@app.on_event("shutdown")
 async def shutdown():
     """
     Signal the application to shut down and close the Redis client if connected.
@@ -466,7 +466,7 @@ def verify_api_key(x_api_key: str = Header(...)):
 # ─────────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────────
-`@app.get`("/health", response_model=HealthResponse)
+@app.get("/health", response_model=HealthResponse)
 async def health_check():
     """
     Return the service health report including Redis connectivity, model load state, circuit state, and uptime.
@@ -493,7 +493,7 @@ async def health_check():
     )
 
 
-`@app.post`("/v1/analyze", response_model=AnalysisResponse)
+@app.post("/v1/analyze", response_model=AnalysisResponse)
 async def analyze_prompt(
     request: AnalysisRequest,
     x_api_key: str = Depends(verify_api_key)  # Use FastAPI dependency injection
@@ -510,7 +510,7 @@ async def analyze_prompt(
     return await run_analysis(request.prompt)
 
 
-`@app.get`("/v1/circuit-status")
+@app.get("/v1/circuit-status")
 async def circuit_status(x_api_key: str = Depends(verify_api_key)):  # Use FastAPI dependency injection
     """
     Expose Redis circuit breaker status and metrics for the analyzer service.
@@ -735,8 +735,7 @@ async def process_event_queue():
     logger.info("Queue processor started")
 
     while not _shutdown_event.is_set():
-        # Use allow_request() for consistency
-        if not redis_client or not redis_cb.allow_request():
+        if not redis_client or redis_cb.state == CircuitState.OPEN
             logger.warning(
                 f"Queue processor paused — Redis unavailable. "
                 f"Retrying in {backoff_s:.0f}s"
