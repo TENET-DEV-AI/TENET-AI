@@ -124,8 +124,11 @@ async def shutdown():
     global redis_client, is_processing
     is_processing = False
     if redis_client:
-        await redis_client.close()
-        logger.info("Redis connection closed")
+        try:
+            await redis_client.close()
+            logger.info("Redis connection closed")
+        except Exception:
+            logger.debug("Redis close failed during shutdown", exc_info=True)
 
 
 def verify_api_key(x_api_key: str = Header(...)):
