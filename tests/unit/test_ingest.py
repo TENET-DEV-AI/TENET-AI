@@ -131,7 +131,7 @@ class TestLLMEventEndpoint:
         )
         assert response.status_code == 401
     
-    @patch('app.redis_client', None)  # Mock no Redis
+    @patch('services.ingest.app.redis_client', None)  # Mock no Redis
     def test_accepts_valid_request(self):
         """Test that valid requests are accepted."""
         response = client.post(
@@ -151,7 +151,7 @@ class TestLLMEventEndpoint:
         assert data["blocked"] is False
         assert data["verdict"] == "pending" or data["verdict"] == "benign"
     
-    @patch('app.redis_client', None)  # Mock no Redis
+    @patch('services.ingest.app.redis_client', None)  # Mock no Redis
     def test_blocks_malicious_prompt(self):
         """Test that malicious prompts are blocked."""
         response = client.post(
