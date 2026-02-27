@@ -8,10 +8,10 @@ from fastapi.testclient import TestClient
 # Import the app module
 import sys
 from pathlib import Path
-
-# Add project root to path for absolute imports
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
+# On remonte à la racine du projet (AI-Cyber-Defender)
+ROOT_DIR = str(Path(__file__).parent.parent.parent)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
 # Use absolute import to avoid confusion with analyzer/app.py
 from services.ingest.app import app, quick_heuristic_check, LLMEventRequest

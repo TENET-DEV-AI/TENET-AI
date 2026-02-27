@@ -5,8 +5,10 @@ Middleware layer for intercepting and processing LLM requests.
 import os
 import uuid
 import logging
+import sys
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,11 +16,10 @@ from pydantic import BaseModel, Field
 import redis.asyncio as redis
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from services.utils.logging_config import setup_logging
+logger = setup_logging(__name__)
 
 # Environment configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
