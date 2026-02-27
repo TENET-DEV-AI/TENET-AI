@@ -419,7 +419,7 @@ async def shutdown():
             await redis_client.close()
             logger.info("Redis connection closed")
         except Exception:
-        logger.debug("Redis close failed during shutdown", exc_info=True)
+            logger.debug("Redis close failed during shutdown", exc_info=True)
 
 
 async def _redis_reconnect_loop():
