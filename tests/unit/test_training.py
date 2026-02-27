@@ -16,7 +16,7 @@ from train_model import (
     create_sample_dataset,
     train_model,
     save_model,
-    test_model
+    test_model as run_test_model
 )
 
 
@@ -118,8 +118,8 @@ class TestModelTraining:
     
     def test_invalid_model_type_raises(self):
         """Test that invalid model type raises error."""
-        prompts = ["test"] * 10
-        labels = [0, 1] * 5
+        prompts = ["benign prompt " + str(i) for i in range(10)] + ["malicious prompt " + str(i) for i in range(10)]
+        labels = [0] * 10 + [1] * 10
         
         with pytest.raises(ValueError, match="Unknown model type"):
             train_model(prompts, labels, model_type="invalid_model")
@@ -130,9 +130,9 @@ class TestModelSaving:
     
     def test_save_model_creates_files(self):
         """Test that save_model creates all expected files."""
-        # Create a mock model and vectorizer
-        mock_model = MagicMock()
-        mock_vectorizer = MagicMock()
+        # Use simple picklable objects instead of MagicMock
+        mock_model = [1, 2, 3] 
+        mock_vectorizer = {"key": "value"}
         
         with tempfile.TemporaryDirectory() as tmpdir:
             save_model(mock_model, mock_vectorizer, tmpdir, accuracy=0.95)
@@ -165,7 +165,7 @@ class TestModelTesting:
             save_model(model, vectorizer, tmpdir, accuracy=0.9)
             
             # Test should run without errors
-            test_model(tmpdir, prompts=["test prompt"])
+            run_test_model(tmpdir, prompts=["test prompt"])
 
 
 class TestIntegration:
@@ -192,7 +192,7 @@ class TestIntegration:
             save_model(model, vectorizer, str(model_path), accuracy)
             
             # Test model
-            test_model(str(model_path))
+            run_test_model(str(model_path))
             
             # Verify all artifacts exist
             assert (model_path / "prompt_detector.joblib").exists()

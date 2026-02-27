@@ -1,0 +1,6 @@
+{
+  "trained_at": "2026-01-26T16:33:22.760284",
+  "accuracy": 1.0,
+  "model_type": "LogisticRegression",
+  "version": "0.1.0"
+}

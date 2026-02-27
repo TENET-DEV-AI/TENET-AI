@@ -251,9 +251,15 @@ def quick_heuristic_check(prompt: str) -> tuple[bool, float, str]:
     return False, 0.0, "benign"
 
 
-@app.get("/v1/events/{event_id}")
-async def get_event(event_id: str, x_api_key: str = Header(...)):
-    """Get analysis results for a specific event."""
+@app.get("/v1/events")
+async def list_events(
+    limit: int = 50,
+    offset: int = 0,
+    x_api_key: str = Header(...)
+):
+    """
+    List historical events for the dashboard.
+    """
     verify_api_key(x_api_key)
     
     if not redis_client:
@@ -261,12 +267,72 @@ async def get_event(event_id: str, x_api_key: str = Header(...)):
     
     try:
         import json
-        event_data = await redis_client.get(f"tenet:event:{event_id}")
-        if not event_data:
-            raise HTTPException(status_code=404, detail="Event not found")
-        return json.loads(event_data)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="Invalid event data")
+        # In a real app, we'd use a database like Postgres for this.
+        # For the prototype, we use Redis keys.
+        keys = await redis_client.keys("tenet:event:*")
+        # Sort keys to get latest first (event IDs are UUIDs, so we should look at timestamps)
+        
+        events = []
+        for key in keys:
+            data = await redis_client.get(key)
+            if data:
+                events.append(json.loads(data))
+        
+        # Sort by timestamp descending
+        events.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        
+        return {
+            "total": len(events),
+            "limit": limit,
+            "offset": offset,
+            "events": events[offset : offset + limit]
+        }
+    except Exception as e:
+        logger.error(f"Failed to list events: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/v1/stats")
+async def get_stats(x_api_key: str = Header(...)):
+    """
+    Get summary statistics for the dashboard.
+    """
+    verify_api_key(x_api_key)
+    
+    if not redis_client:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+    
+    try:
+        import json
+        keys = await redis_client.keys("tenet:event:*")
+        
+        total_events = len(keys)
+        blocked_count = 0
+        threat_counts = {
+            "malicious": 0,
+            "suspicious": 0,
+            "benign": 0
+        }
+        
+        for key in keys:
+            data = await redis_client.get(key)
+            if data:
+                event = json.loads(data)
+                if event.get("blocked"):
+                    blocked_count += 1
+                
+                verdict = event.get("verdict", "benign")
+                threat_counts[verdict] = threat_counts.get(verdict, 0) + 1
+        
+        return {
+            "total_events": total_events,
+            "blocked_count": blocked_count,
+            "threat_distribution": threat_counts,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Failed to get stats: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 if __name__ == "__main__":

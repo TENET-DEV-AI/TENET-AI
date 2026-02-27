@@ -135,8 +135,8 @@ Security Operations Center interface for:
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/tenet-ai
-cd tenet-ai
+git clone https://github.com/yourusername/AI-Cyber-Defender
+cd AI-Cyber-Defender
 
 # Install dependencies
 pip install -r requirements.txt

@@ -8,9 +8,13 @@ from fastapi.testclient import TestClient
 # Import the app module
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "services" / "ingest"))
 
-from app import app, quick_heuristic_check, LLMEventRequest
+# Add project root to path for absolute imports
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+# Use absolute import to avoid confusion with analyzer/app.py
+from services.ingest.app import app, quick_heuristic_check, LLMEventRequest
 
 
 # Test client
@@ -127,7 +131,7 @@ class TestLLMEventEndpoint:
         )
         assert response.status_code == 401
     
-    @patch('app.redis_client', None)  # Mock no Redis
+    @patch('services.ingest.app.redis_client', None)  # Mock no Redis
     def test_accepts_valid_request(self):
         """Test that valid requests are accepted."""
         response = client.post(
@@ -147,7 +151,7 @@ class TestLLMEventEndpoint:
         assert data["blocked"] is False
         assert data["verdict"] == "pending" or data["verdict"] == "benign"
     
-    @patch('app.redis_client', None)  # Mock no Redis
+    @patch('services.ingest.app.redis_client', None)  # Mock no Redis
     def test_blocks_malicious_prompt(self):
         """Test that malicious prompts are blocked."""
         response = client.post(

@@ -1,0 +1,80 @@
+name: SAST Security Scanning
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday at midnight
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  sast-scan:
+    name: SAST Security Scanning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    
+    steps:
+      - uses: actions/checkout@v6
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      
+      - name: Install security tools
+        run: |
+          pip install bandit safety semgrep
+      
+      # Bandit - Python SAST
+      - name: Run Bandit SAST scan
+        run: |
+          bandit -r services/ scripts/ -f json -o bandit-report.json || true
+          bandit -r services/ scripts/ -f screen || true
+        continue-on-error: true
+      
+      # Safety - Dependency vulnerabilities
+      - name: Run Safety dependency scan
+        run: |
+          safety check --json > safety-report.json || true
+          safety check || true
+        continue-on-error: true
+      
+      # Semgrep - Advanced SAST
+      - name: Run Semgrep scan
+        run: |
+          semgrep --config=auto services/ scripts/ --json -o semgrep-report.json || true
+          semgrep --config=auto services/ scripts/ || true
+        continue-on-error: true
+      
+      - name: Upload security reports
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: sast-reports
+          path: |
+            bandit-report.json
+            safety-report.json
+            semgrep-report.json
+
+  # CodeQL Analysis (GitHub's built-in SAST)
+  codeql-analysis:
+    name: CodeQL SAST Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+      
+    steps:
+      - uses: actions/checkout@v6
+      
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: python
+      
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4

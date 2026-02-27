@@ -59,8 +59,8 @@ We welcome feature suggestions! Please:
 
 1. **Fork the repository**
 ```bash
-git clone https://github.com/yourusername/tenet-ai
-cd tenet-ai
+git clone https://github.com/yourusername/AI-Cyber-Defender 
+cd AI-Cyber-Defender 
 git checkout -b feature/your-feature-name
 ```
 
