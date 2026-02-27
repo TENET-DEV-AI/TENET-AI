@@ -11,8 +11,18 @@ def setup_logging(name: str) -> logging.Logger:
     
     Returns:
         Configured logger instance
+
+    EXEMPLES usage :
+        >>> from services.utils.logging_config import setup_logging
+        >>> logger = setup_logging(__name__)
+        >>> logger.info("Service started")
+        >>> logger.error("An error occurred", exc_info=True) 
     """
     logger = logging.getLogger(name)
+
+    #add log level configurations from environment
+    log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+    logger.setLevel(getattr(logging, log_level_str, logging.INFO))
 
     if not logger.handlers:
 
