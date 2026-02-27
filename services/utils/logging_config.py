@@ -13,4 +13,10 @@ def setup_logging(name: str) -> logging.Logger:
         Configured logger instance
     """
     logger = logging.getLogger(name)
+
+    # Configure logging format with timestamps
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
     return logger
