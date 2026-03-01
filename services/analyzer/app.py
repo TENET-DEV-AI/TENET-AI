@@ -14,8 +14,10 @@ from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import redis.asyncio as redis
-import joblib
-import numpy as np
+try:
+    import joblib
+except ImportError:
+    joblib = None  # type: ignore[assignment]
 
 # Configure logging
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
