@@ -6,8 +6,8 @@ import os
 import json
 import asyncio
 import sys
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Annotated, Optional
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Header
@@ -54,7 +54,8 @@ app.add_middleware(
 redis_client: Optional[redis.Redis] = None
 ml_model = None
 vectorizer = None
-is_processing = False
+stop_event: Optional[asyncio.Event] = None
+background_task = None
 
 
 # Models
@@ -68,7 +69,7 @@ class AnalysisResponse(BaseModel):
     """Analysis result."""
     risk_score: float
     verdict: str
-    threat_type: Optional[str]
+    threat_type: Optional[str] = None
     confidence: float
     details: dict
 
@@ -85,7 +86,7 @@ class HealthResponse(BaseModel):
 @app.on_event("startup")
 async def startup():
     """Initialize connections and models on startup."""
-    global redis_client, ml_model, vectorizer
+    global redis_client, ml_model, vectorizer, background_task, stop_event
     
     # Connect to Redis
     try:
@@ -115,15 +116,17 @@ async def startup():
     except Exception as e:
         logger.error(f"Failed to load ML models: {e}")
     
-    # Start background processor
-    asyncio.create_task(process_event_queue())
+    # Create stop event and start background processor
+    stop_event = asyncio.Event()
+    background_task = asyncio.create_task(process_event_queue())
 
 
 @app.on_event("shutdown")
 async def shutdown():
     """Cleanup on shutdown."""
-    global redis_client, is_processing
-    is_processing = False
+    global redis_client, stop_event
+    if stop_event:
+        stop_event.set()
     if redis_client:
         try:
             await redis_client.close()
@@ -159,10 +162,16 @@ async def health_check():
     )
 
 
-@app.post("/v1/analyze", response_model=AnalysisResponse)
+@app.post(
+    "/v1/analyze",
+    response_model=AnalysisResponse,
+    responses={
+        401: {"description": "Invalid API key"}
+    }
+)
 async def analyze_prompt(
     request: AnalysisRequest,
-    x_api_key: str = Header(...)
+    x_api_key: Annotated[str, Header(...)]
 ):
     """
     Analyze a prompt for security threats.
@@ -170,11 +179,11 @@ async def analyze_prompt(
     """
     verify_api_key(x_api_key)
     prompt = request.prompt
-    result = await run_analysis(prompt)
+    result = run_analysis(prompt)
     return result
 
 
-async def run_analysis(prompt: str) -> AnalysisResponse:
+def run_analysis(prompt: str) -> AnalysisResponse:
     """Run full analysis on a prompt."""
     # Heuristic analysis
     heuristic_result = heuristic_analysis(prompt)
@@ -312,13 +321,15 @@ def ml_analysis(prompt: str) -> dict:
 
 async def process_event_queue():
     """Background task to process events from the queue."""
-    global is_processing, redis_client
-    is_processing = True
+    global stop_event, redis_client
     
-    while is_processing:
+    while not stop_event.is_set():
         try:
             if not redis_client:
-                await asyncio.sleep(5)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    pass
                 continue
             
             # Pop event from queue
@@ -329,7 +340,7 @@ async def process_event_queue():
                 logger.info(f"Processing event: {event.get('event_id')}")
                 
                 # Analyze the prompt
-                result = await run_analysis(event.get("prompt", ""))
+                result = run_analysis(event.get("prompt", ""))
                 
                 # Update the event with analysis results
                 event["analyzed"] = True
@@ -337,7 +348,7 @@ async def process_event_queue():
                 event["verdict"] = result.verdict
                 event["threat_type"] = result.threat_type
                 event["analysis_details"] = result.details
-                event["analyzed_at"] = datetime.utcnow().isoformat()
+                event["analyzed_at"] = datetime.now(timezone.utc).isoformat()
                 
                 # Store updated event
                 await redis_client.set(
@@ -351,11 +362,17 @@ async def process_event_queue():
                     await redis_client.lpush("tenet:alerts", json.dumps(event))
                     logger.warning(f"Alert: Malicious event detected - {event.get('event_id')}")
             else:
-                await asyncio.sleep(1)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    pass
                 
         except Exception as e:
             logger.error(f"Queue processing error: {e}")
-            await asyncio.sleep(5)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
 
 
 if __name__ == "__main__":
