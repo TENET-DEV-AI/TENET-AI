@@ -148,6 +148,7 @@ async def shutdown():
                 await background_task
             except asyncio.CancelledError:
                 logger.info("Background task cancelled successfully")
+                raise
     
     # Close Redis connection
     if redis_client:
@@ -351,6 +352,56 @@ def ml_analysis(prompt: str) -> dict:
         return {"risk_score": 0.0, "verdict": "error", "threat_type": None, "confidence": 0.0}
 
 
+async def _wait_for_stop_event(timeout: float):
+    """Helper to wait for stop event with timeout."""
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        pass
+
+
+async def _update_and_store_event(event: dict, event_id: str, result: AnalysisResponse):
+    """Update event with analysis results and store in Redis."""
+    # Update the event with analysis results
+    event["analyzed"] = True
+    event["risk_score"] = result.risk_score
+    event["verdict"] = result.verdict
+    event["threat_type"] = result.threat_type
+    event["analysis_details"] = result.details
+    event["analyzed_at"] = datetime.now(timezone.utc).isoformat()
+    
+    # Store updated event
+    await redis_client.set(
+        f"tenet:event:{event_id}",
+        json.dumps(event),
+        ex=86400
+    )
+    
+    # If malicious, add to alerts
+    if result.verdict == "malicious":
+        await redis_client.lpush("tenet:alerts", json.dumps(event))
+        logger.warning(f"Alert: Malicious event detected - {event_id}")
+
+
+async def _process_single_event(event_json: str):
+    """Process a single event from the queue."""
+    event = json.loads(event_json)
+    
+    # Validate event_id presence
+    event_id = event.get('event_id')
+    if not event_id:
+        logger.warning(f"Skipping event without event_id. Raw event: {event_json}")
+        return
+    
+    logger.info(f"Processing event: {event_id}")
+    
+    # Analyze the prompt
+    result = run_analysis(event.get("prompt", ""))
+    
+    # Update and store event
+    await _update_and_store_event(event, event_id, result)
+
+
 async def process_event_queue():
     """Background task to process events from the queue."""
     global stop_event, redis_client
@@ -358,60 +409,20 @@ async def process_event_queue():
     while not stop_event.is_set():
         try:
             if not redis_client:
-                try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
+                await _wait_for_stop_event(5.0)
                 continue
             
             # Pop event from queue
             event_json = await redis_client.rpop("tenet:events:queue")
             
             if event_json:
-                event = json.loads(event_json)
-                
-                # Validate event_id presence
-                event_id = event.get('event_id')
-                if not event_id:
-                    logger.warning(f"Skipping event without event_id. Raw event: {event_json}")
-                    continue
-                
-                logger.info(f"Processing event: {event_id}")
-                
-                # Analyze the prompt
-                result = run_analysis(event.get("prompt", ""))
-                
-                # Update the event with analysis results
-                event["analyzed"] = True
-                event["risk_score"] = result.risk_score
-                event["verdict"] = result.verdict
-                event["threat_type"] = result.threat_type
-                event["analysis_details"] = result.details
-                event["analyzed_at"] = datetime.now(timezone.utc).isoformat()
-                
-                # Store updated event
-                await redis_client.set(
-                    f"tenet:event:{event_id}",
-                    json.dumps(event),
-                    ex=86400
-                )
-                
-                # If malicious, add to alerts
-                if result.verdict == "malicious":
-                    await redis_client.lpush("tenet:alerts", json.dumps(event))
-                    logger.warning(f"Alert: Malicious event detected - {event_id}")
+                await _process_single_event(event_json)
             else:
-                try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    pass
+                await _wait_for_stop_event(1.0)
                 
         except Exception as e:
             logger.error(f"Queue processing error: {e}")
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                pass
+            await _wait_for_stop_event(5.0)
 
 
 if __name__ == "__main__":
