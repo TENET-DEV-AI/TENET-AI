@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 # Import the app module
 import sys
 from pathlib import Path
-# On remonte à la racine du projet (AI-Cyber-Defender)
+# Go up to the project root directory (AI-Cyber-Defender)
 ROOT_DIR = str(Path(__file__).parent.parent.parent)
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
