@@ -30,7 +30,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", 8100))
-API_KEY = os.getenv("API_KEY", "tenet-dev-key-change-in-production")
+API_KEY = os.getenv("API_KEY")
 MODEL_PATH = os.getenv("MODEL_PATH", "./models/trained")
 PROMPT_INJECTION_THRESHOLD = float(os.getenv("PROMPT_INJECTION_THRESHOLD", 0.75))
 
@@ -88,6 +88,11 @@ async def startup():
     """Initialize connections and models on startup."""
     global redis_client, ml_model, vectorizer, background_task, stop_event
     
+    # Validate required environment variables
+    if not API_KEY:
+        logger.error("API_KEY environment variable is not set")
+        raise RuntimeError("API_KEY environment variable is required but not set. Please configure API_KEY before starting the service.")
+    
     # Connect to Redis
     try:
         redis_client = redis.Redis(
@@ -124,9 +129,27 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     """Cleanup on shutdown."""
-    global redis_client, stop_event
+    global redis_client, stop_event, background_task
+    
+    # Signal the background task to stop
     if stop_event:
         stop_event.set()
+        logger.info("Stop event set, waiting for background task to finish")
+    
+    # Wait for background task to complete gracefully
+    if background_task:
+        try:
+            await asyncio.wait_for(background_task, timeout=10.0)
+            logger.info("Background task completed")
+        except asyncio.TimeoutError:
+            logger.warning("Background task did not complete in time, cancelling")
+            background_task.cancel()
+            try:
+                await background_task
+            except asyncio.CancelledError:
+                logger.info("Background task cancelled successfully")
+    
+    # Close Redis connection
     if redis_client:
         try:
             await redis_client.close()
@@ -150,8 +173,9 @@ async def health_check():
         try:
             await redis_client.ping()
             redis_connected = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Redis health check failed: {e}", exc_info=True)
+            redis_connected = False
     
     return HealthResponse(
         status="healthy" if redis_connected and ml_model else "degraded",
@@ -218,6 +242,14 @@ def run_analysis(prompt: str) -> AnalysisResponse:
             threat_type=heuristic_result["threat_type"],
             confidence=0.6,
             details={"method": "heuristic", "recommendation": "manual_review"}
+        )
+    elif ml_result and ml_result["risk_score"] > 0.5:
+        return AnalysisResponse(
+            risk_score=ml_result["risk_score"],
+            verdict="suspicious",
+            threat_type=ml_result["threat_type"],
+            confidence=ml_result["confidence"],
+            details={"method": "ml", "model_version": "0.1", "recommendation": "manual_review"}
         )
     else:
         return AnalysisResponse(
@@ -337,7 +369,14 @@ async def process_event_queue():
             
             if event_json:
                 event = json.loads(event_json)
-                logger.info(f"Processing event: {event.get('event_id')}")
+                
+                # Validate event_id presence
+                event_id = event.get('event_id')
+                if not event_id:
+                    logger.warning(f"Skipping event without event_id. Raw event: {event_json}")
+                    continue
+                
+                logger.info(f"Processing event: {event_id}")
                 
                 # Analyze the prompt
                 result = run_analysis(event.get("prompt", ""))
@@ -352,7 +391,7 @@ async def process_event_queue():
                 
                 # Store updated event
                 await redis_client.set(
-                    f"tenet:event:{event['event_id']}",
+                    f"tenet:event:{event_id}",
                     json.dumps(event),
                     ex=86400
                 )
@@ -360,7 +399,7 @@ async def process_event_queue():
                 # If malicious, add to alerts
                 if result.verdict == "malicious":
                     await redis_client.lpush("tenet:alerts", json.dumps(event))
-                    logger.warning(f"Alert: Malicious event detected - {event.get('event_id')}")
+                    logger.warning(f"Alert: Malicious event detected - {event_id}")
             else:
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=1.0)
