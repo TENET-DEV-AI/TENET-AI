@@ -88,7 +88,6 @@ def main():
     print("🛡️  TENET Agent – Issue Solver starting...")
 
     # ── Gather context ─────────────────────────────────────────────────────────
-    repo_name = os.environ["REPO"]
     issue_number = int(os.environ["ISSUE_NUMBER"])
     issue_title = os.environ.get("ISSUE_TITLE", "")
     issue_body = os.environ.get("ISSUE_BODY", "") or ""
