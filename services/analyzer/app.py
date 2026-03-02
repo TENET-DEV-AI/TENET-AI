@@ -33,6 +33,7 @@ API_PORT = int(os.getenv("API_PORT", 8100))
 API_KEY = os.getenv("API_KEY")
 MODEL_PATH = os.getenv("MODEL_PATH", "./models/trained")
 PROMPT_INJECTION_THRESHOLD = float(os.getenv("PROMPT_INJECTION_THRESHOLD", 0.75))
+SHUTDOWN_TIMEOUT = float(os.getenv("SHUTDOWN_TIMEOUT", 10.0))
 
 # FastAPI app
 app = FastAPI(
@@ -141,7 +142,7 @@ async def shutdown():
     # Wait for background task to complete gracefully
     if background_task:
         try:
-            await asyncio.wait_for(background_task, timeout=10.0)
+            await asyncio.wait_for(background_task, timeout=SHUTDOWN_TIMEOUT)
             logger.info("Background task completed")
         except asyncio.TimeoutError:
             logger.warning("Background task did not complete in time, cancelling")
@@ -150,7 +151,7 @@ async def shutdown():
                 await background_task
             except asyncio.CancelledError:  # NOSONAR - Don't re-raise in shutdown handler, cancellation is expected
                 logger.info("Background task cancelled successfully")
-                
+
     # Close Redis connection
     if redis_client:
         try:
@@ -411,7 +412,7 @@ async def _process_single_event(event_json: str):
         logger.warning("Event is not a dictionary, skipping")
         return
     
-    # Validate event_id presence
+    # Validate event_id presence and format
     event_id = event.get('event_id')
     if not event_id or not isinstance(event_id, str):
         # Log only safe metadata, avoid exposing sensitive prompts
@@ -422,6 +423,16 @@ async def _process_single_event(event_json: str):
             "prompt_length": len(event.get('prompt', '')) if isinstance(event.get('prompt'), str) else 0
         }
         logger.warning(f"Skipping event without valid event_id. Safe metadata: {safe_summary}")
+        return
+    
+    # Additional event_id validation
+    event_id = event_id.strip()
+    if not event_id:
+        logger.warning("Skipping event with empty event_id after stripping")
+        return
+    
+    if len(event_id) > 255:
+        logger.warning(f"Skipping event with overly long event_id ({len(event_id)} chars)")
         return
     
     logger.info(f"Processing event: {event_id}")
