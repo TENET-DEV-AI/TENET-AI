@@ -63,7 +63,10 @@ def main():
     model = get_llm_client()
     review_text = call_llm(model, prompt)
 
-    if not review_text:
+    if (
+        not review_text
+        or review_text.startswith("⚠️ TENET Agent encountered an error calling the LLM:")
+    ):
         print("❌ LLM returned an empty response.")
         sys.exit(1)
 
