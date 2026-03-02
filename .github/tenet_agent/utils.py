@@ -179,12 +179,34 @@ def extract_keywords(text: str) -> list[str]:
 
 # ─── Git helpers ──────────────────────────────────────────────────────────────
 
+import re
+
+def _validate_branch_name(name: str) -> bool:
+    """Ensure branch name contains only safe characters."""
+    return bool(re.match(r'^[a-zA-Z0-9._/-]+$', name)) and '..' not in name
+
+def _validate_filepath(filepath: str, base_path: str = ".") -> bool:
+    """Ensure filepath doesn't escape the repository root."""
+    abs_base = os.path.abspath(base_path)
+    abs_target = os.path.abspath(os.path.join(base_path, filepath))
+    return abs_target.startswith(abs_base + os.sep) or abs_target == abs_base
+
 def create_branch_and_commit(branch_name: str, file_changes: dict[str, str], commit_message: str) -> bool:
     """
     Apply file_changes {filepath: new_content} and commit them to branch_name.
     Uses subprocess (git CLI is available in GitHub Actions runners).
     """
     import subprocess
+
+    # Validate inputs
+    if not _validate_branch_name(branch_name):
+        print(f"❌ Invalid branch name: {branch_name}")
+        return False
+    
+    for filepath in file_changes:
+        if not _validate_filepath(filepath):
+            print(f"❌ Invalid filepath (potential path traversal): {filepath}")
+            return False
 
     def run(cmd: list[str], check=True) -> subprocess.CompletedProcess:
         result = subprocess.run(cmd, capture_output=True, text=True)
