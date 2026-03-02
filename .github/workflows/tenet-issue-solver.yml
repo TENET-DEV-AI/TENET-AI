@@ -56,12 +56,16 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            await github.rest.issues.addAssignees({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.issue.number,
-              assignees: ['github-actions[bot]'],
-            });
+            try {
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                assignees: ['github-actions[bot]'],
+              });
+            } catch (e) {
+              core.warning(`Could not assign github-actions[bot]: ${e.message}`);
+            }
             // Post a status comment
             await github.rest.issues.createComment({
               owner: context.repo.owner,
