@@ -4,34 +4,36 @@ ML-based threat detection engine for LLM prompts.
 """
 import os
 import json
-import logging
 import asyncio
-from datetime import datetime
-from typing import Optional
+import sys
+from datetime import datetime, timezone
+from typing import Annotated, Optional
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import redis.asyncio as redis
-import joblib
-import numpy as np
+try:
+    import joblib
+except ImportError:
+    joblib = None  # type: ignore[assignment]
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from services.utils.logging_config import setup_logging
+logger = setup_logging(__name__)
 
 # Environment configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", 8100))
-API_KEY = os.getenv("API_KEY", "tenet-dev-key-change-in-production")
+API_KEY = os.getenv("API_KEY")
 MODEL_PATH = os.getenv("MODEL_PATH", "./models/trained")
 PROMPT_INJECTION_THRESHOLD = float(os.getenv("PROMPT_INJECTION_THRESHOLD", 0.75))
+SHUTDOWN_TIMEOUT = float(os.getenv("SHUTDOWN_TIMEOUT", 10.0))
 
 # FastAPI app
 app = FastAPI(
@@ -40,10 +42,12 @@ app = FastAPI(
     version="0.1.0"
 )
 
-# CORS middleware
+# CORS middleware - configurable origins for security
+CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "https://localhost:3000,https://localhost:5173")
+allowed_origins = [origin.strip() for origin in CORS_ALLOWED_ORIGINS.split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -53,21 +57,22 @@ app.add_middleware(
 redis_client: Optional[redis.Redis] = None
 ml_model = None
 vectorizer = None
-is_processing = False
+stop_event: Optional[asyncio.Event] = None
+background_task = None
 
 
 # Models
 class AnalysisRequest(BaseModel):
     """Request for prompt analysis."""
-    prompt: str = Field(..., description="The prompt to analyze")
-    context: Optional[str] = Field(None, description="Additional context")
+    prompt: str = Field(..., description="The prompt to analyze", min_length=1, max_length=10000)
+    context: Optional[str] = Field(None, description="Additional context", max_length=5000)
 
 
 class AnalysisResponse(BaseModel):
     """Analysis result."""
     risk_score: float
     verdict: str
-    threat_type: Optional[str]
+    threat_type: Optional[str] = None
     confidence: float
     details: dict
 
@@ -84,7 +89,12 @@ class HealthResponse(BaseModel):
 @app.on_event("startup")
 async def startup():
     """Initialize connections and models on startup."""
-    global redis_client, ml_model, vectorizer
+    global redis_client, ml_model, vectorizer, background_task, stop_event
+    
+    # Validate required environment variables
+    if not API_KEY:
+        logger.error("API_KEY environment variable is not set")
+        raise RuntimeError("API_KEY environment variable is required but not set. Please configure API_KEY before starting the service.")
     
     # Connect to Redis
     try:
@@ -95,8 +105,8 @@ async def startup():
         )
         await redis_client.ping()
         logger.info(f"Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
-    except Exception as e:
-        logger.error(f"Failed to connect to Redis: {e}")
+    except Exception:
+        logger.exception("Failed to connect to Redis")
         redis_client = None
     
     # Load ML models
@@ -111,24 +121,47 @@ async def startup():
             logger.info("ML models loaded successfully")
         else:
             logger.warning(f"ML models not found at {MODEL_PATH}")
-    except Exception as e:
-        logger.error(f"Failed to load ML models: {e}")
+    except Exception:
+        logger.exception("Failed to load ML models")
     
-    # Start background processor
-    asyncio.create_task(process_event_queue())
+    # Create stop event and start background processor
+    stop_event = asyncio.Event()
+    background_task = asyncio.create_task(process_event_queue())
 
 
 @app.on_event("shutdown")
 async def shutdown():
     """Cleanup on shutdown."""
-    global redis_client, is_processing
-    is_processing = False
+    global redis_client, stop_event, background_task
+    
+    # Signal the background task to stop
+    if stop_event:
+        stop_event.set()
+        logger.info("Stop event set, waiting for background task to finish")
+    
+    # Wait for background task to complete gracefully
+    if background_task:
+        try:
+            await asyncio.wait_for(background_task, timeout=SHUTDOWN_TIMEOUT)
+            logger.info("Background task completed")
+        except asyncio.TimeoutError:
+            logger.warning("Background task did not complete in time, cancelling")
+            background_task.cancel()
+            try:
+                await background_task
+            except asyncio.CancelledError:  # NOSONAR - Don't re-raise in shutdown handler, cancellation is expected
+                logger.info("Background task cancelled successfully")
+
+    # Close Redis connection
     if redis_client:
-        await redis_client.close()
-        logger.info("Redis connection closed")
+        try:
+            await redis_client.close()
+            logger.info("Redis connection closed")
+        except Exception:
+            logger.debug("Redis close failed during shutdown", exc_info=True)
 
 
-def verify_api_key(x_api_key: str = Header(...)):
+def verify_api_key(x_api_key: str):
     """Verify API key for authentication."""
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
@@ -144,7 +177,8 @@ async def health_check():
             await redis_client.ping()
             redis_connected = True
         except Exception:
-            pass
+            logger.exception("Redis health check failed")
+            redis_connected = False
     
     return HealthResponse(
         status="healthy" if redis_connected and ml_model else "degraded",
@@ -155,10 +189,16 @@ async def health_check():
     )
 
 
-@app.post("/v1/analyze", response_model=AnalysisResponse)
+@app.post(
+    "/v1/analyze",
+    response_model=AnalysisResponse,
+    responses={
+        401: {"description": "Invalid API key"}
+    }
+)
 async def analyze_prompt(
     request: AnalysisRequest,
-    x_api_key: str = Header(...)
+    x_api_key: Annotated[str, Header(...)]
 ):
     """
     Analyze a prompt for security threats.
@@ -166,11 +206,11 @@ async def analyze_prompt(
     """
     verify_api_key(x_api_key)
     prompt = request.prompt
-    result = await run_analysis(prompt)
+    result = run_analysis(prompt)
     return result
 
 
-async def run_analysis(prompt: str) -> AnalysisResponse:
+def run_analysis(prompt: str) -> AnalysisResponse:
     """Run full analysis on a prompt."""
     # Heuristic analysis
     heuristic_result = heuristic_analysis(prompt)
@@ -206,6 +246,14 @@ async def run_analysis(prompt: str) -> AnalysisResponse:
             confidence=0.6,
             details={"method": "heuristic", "recommendation": "manual_review"}
         )
+    elif ml_result and ml_result["risk_score"] > 0.5:
+        return AnalysisResponse(
+            risk_score=ml_result["risk_score"],
+            verdict="suspicious",
+            threat_type=ml_result["threat_type"],
+            confidence=ml_result["confidence"],
+            details={"method": "ml", "model_version": "0.1", "recommendation": "manual_review"}
+        )
     else:
         return AnalysisResponse(
             risk_score=max(heuristic_result["risk_score"], ml_result["risk_score"] if ml_result else 0.0),
@@ -233,7 +281,7 @@ def heuristic_analysis(prompt: str) -> dict:
             "override system": 0.85,
             "</s>": 0.90,
             "<|system|>": 0.95,
-            "\\n\\n###": 0.80,
+            "\n\n###": 0.80,
         },
         "jailbreak": {
             "do anything now": 0.90,
@@ -301,57 +349,137 @@ def ml_analysis(prompt: str) -> dict:
             "threat_type": "prompt_injection" if malicious_prob > 0.5 else None,
             "confidence": float(max(proba))
         }
-    except Exception as e:
-        logger.error(f"ML analysis error: {e}")
+    except Exception:
+        logger.exception("ML analysis error")
         return {"risk_score": 0.0, "verdict": "error", "threat_type": None, "confidence": 0.0}
+
+
+async def _wait_for_stop_event():
+    """Helper to wait for stop event. Use with asyncio.timeout() context manager."""
+    # Defensive check: ensure stop_event exists before awaiting
+    if stop_event is None:
+        return
+    await stop_event.wait()
+
+
+async def _wait_with_timeout(seconds: float):
+    """Wait for stop event with timeout, suppressing TimeoutError."""
+    try:
+        async with asyncio.timeout(seconds):
+            await _wait_for_stop_event()
+    except asyncio.TimeoutError:
+        pass
+
+
+async def _update_and_store_event(event: dict, event_id: str, result: AnalysisResponse):
+    """Update event with analysis results and store in Redis."""
+    # Ensure redis_client is available
+    if not redis_client:
+        logger.warning(f"Cannot store event {event_id}: Redis client not available")
+        return
+    
+    # Update the event with analysis results
+    event["analyzed"] = True
+    event["risk_score"] = result.risk_score
+    event["verdict"] = result.verdict
+    event["threat_type"] = result.threat_type
+    event["analysis_details"] = result.details
+    event["analyzed_at"] = datetime.now(timezone.utc).isoformat()
+    
+    # Store updated event
+    await redis_client.set(
+        f"tenet:event:{event_id}",
+        json.dumps(event),
+        ex=86400
+    )
+    
+    # If malicious, add to alerts
+    if result.verdict == "malicious":
+        await redis_client.lpush("tenet:alerts", json.dumps(event))
+        logger.warning(f"Alert: Malicious event detected - {event_id}")
+
+
+async def _process_single_event(event_json: str):
+    """Process a single event from the queue."""
+    try:
+        event = json.loads(event_json)
+    except json.JSONDecodeError:
+        logger.exception("Failed to parse event JSON")
+        return
+    
+    # Validate event structure
+    if not isinstance(event, dict):
+        logger.warning("Event is not a dictionary, skipping")
+        return
+    
+    # Validate event_id presence and format
+    event_id = event.get('event_id')
+    if not event_id or not isinstance(event_id, str):
+        # Log only safe metadata, avoid exposing sensitive prompts
+        safe_summary = {
+            "user_id": event.get('user_id'),
+            "timestamp": event.get('timestamp'),
+            "has_prompt": 'prompt' in event,
+            "prompt_length": len(event.get('prompt', '')) if isinstance(event.get('prompt'), str) else 0
+        }
+        logger.warning(f"Skipping event without valid event_id. Safe metadata: {safe_summary}")
+        return
+    
+    # Additional event_id validation
+    event_id = event_id.strip()
+    if not event_id:
+        logger.warning("Skipping event with empty event_id after stripping")
+        return
+    
+    if len(event_id) > 255:
+        logger.warning(f"Skipping event with overly long event_id ({len(event_id)} chars)")
+        return
+    
+    logger.info(f"Processing event: {event_id}")
+    
+    # Get and validate prompt
+    prompt = event.get("prompt", "")
+    if not isinstance(prompt, str):
+        logger.warning(f"Event {event_id} has invalid prompt type, skipping")
+        return
+    
+    if not prompt.strip():
+        logger.warning(f"Event {event_id} has empty prompt, skipping")
+        return
+    
+    # Truncate very long prompts for safety
+    if len(prompt) > 10000:
+        logger.warning(f"Event {event_id} has overly long prompt ({len(prompt)} chars), truncating")
+        prompt = prompt[:10000]
+    
+    # Analyze the prompt
+    result = run_analysis(prompt)
+    
+    # Update and store event
+    await _update_and_store_event(event, event_id, result)
 
 
 async def process_event_queue():
     """Background task to process events from the queue."""
-    global is_processing, redis_client
-    is_processing = True
+    global stop_event, redis_client
     
-    while is_processing:
+    while not stop_event.is_set():
         try:
             if not redis_client:
-                await asyncio.sleep(5)
+                await _wait_with_timeout(5.0)
                 continue
             
             # Pop event from queue
             event_json = await redis_client.rpop("tenet:events:queue")
             
             if event_json:
-                event = json.loads(event_json)
-                logger.info(f"Processing event: {event.get('event_id')}")
-                
-                # Analyze the prompt
-                result = await run_analysis(event.get("prompt", ""))
-                
-                # Update the event with analysis results
-                event["analyzed"] = True
-                event["risk_score"] = result.risk_score
-                event["verdict"] = result.verdict
-                event["threat_type"] = result.threat_type
-                event["analysis_details"] = result.details
-                event["analyzed_at"] = datetime.utcnow().isoformat()
-                
-                # Store updated event
-                await redis_client.set(
-                    f"tenet:event:{event['event_id']}",
-                    json.dumps(event),
-                    ex=86400
-                )
-                
-                # If malicious, add to alerts
-                if result.verdict == "malicious":
-                    await redis_client.lpush("tenet:alerts", json.dumps(event))
-                    logger.warning(f"Alert: Malicious event detected - {event.get('event_id')}")
+                await _process_single_event(event_json)
             else:
-                await asyncio.sleep(1)
+                await _wait_with_timeout(1.0)
                 
-        except Exception as e:
-            logger.error(f"Queue processing error: {e}")
-            await asyncio.sleep(5)
+        except Exception:
+            logger.exception("Queue processing error")
+            await _wait_with_timeout(5.0)
 
 
 if __name__ == "__main__":
