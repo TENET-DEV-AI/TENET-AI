@@ -1,0 +1,115 @@
+name: 🤖 TENET Agent – Issue Solver
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  tenet-solve:
+    name: TENET Issue Solver
+    runs-on: ubuntu-latest
+
+    # Only run when the comment is on an issue (not a PR) and contains the trigger
+    if: |
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '/tenet fix')
+
+    steps:
+      - name: Check maintainer permission
+        id: permission-check
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: perm } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.payload.comment.user.login,
+            });
+            const allowed = ['admin', 'write'].includes(perm.permission);
+            core.setOutput('allowed', allowed.toString());
+            if (!allowed) {
+              core.notice(`User ${context.payload.comment.user.login} does not have maintainer permission. Ignoring /tenet fix.`);
+            }
+
+      - name: React with 👀 to acknowledge command
+        if: steps.permission-check.outputs.allowed == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes',
+            });
+
+      - name: Assign TENET agent to issue
+        if: steps.permission-check.outputs.allowed == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            try {
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                assignees: ['github-actions[bot]'],
+              });
+            } catch (e) {
+              core.warning(`Could not assign github-actions[bot]: ${e.message}`);
+            }
+            // Post a status comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `🤖 **TENET Agent** is on it! Analyzing the issue and generating a fix...\n\n> Triggered by @${context.payload.comment.user.login}`,
+            });
+
+      - name: Checkout repository
+        if: steps.permission-check.outputs.allowed == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        if: steps.permission-check.outputs.allowed == 'true'
+        run: |
+          git config user.name "TENET Agent"
+          git config user.email "tenet-agent@users.noreply.github.com"
+
+      - name: Set up Python
+        if: steps.permission-check.outputs.allowed == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: .github/tenet_agent/requirements.txt
+
+      - name: Install TENET agent dependencies
+        if: steps.permission-check.outputs.allowed == 'true'
+        run: |
+          pip install -r .github/tenet_agent/requirements.txt
+
+      - name: Run TENET Issue Solver
+        if: steps.permission-check.outputs.allowed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TENET_AI_KEY: ${{ secrets.TENET_AI_KEY }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_LABELS: ${{ toJSON(github.event.issue.labels) }}
+          REPO: ${{ github.repository }}
+          TRIGGERED_BY: ${{ github.event.comment.user.login }}
+        run: |
+          python .github/tenet_agent/tenet_solve.py

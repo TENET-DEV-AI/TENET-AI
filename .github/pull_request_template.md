@@ -1,3 +1,8 @@
+> 🤖 **TENET Agent** will automatically review this PR for security issues and code quality.
+> Maintainers: to have TENET solve an issue autonomously, comment `/tenet fix` on the issue.
+
+---
+
 ## Description
 
 <!-- Describe your changes in detail -->
