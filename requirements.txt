@@ -25,7 +25,7 @@ python-multipart>=0.0.32
 
 # Database & Cache
 redis>=8.1.0
-psycopg2-binary>=2.9.12
+psycopg2-binary>=2.9.13
 
 # HTTP & APIs
 httpx>=0.28.1
