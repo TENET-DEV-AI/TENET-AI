@@ -345,3 +345,39 @@ curl -X POST http://localhost:8100/v1/analyze \
 ## Version
 
 Current Version: **0.1.0**
+
+---
+
+## Custom Rules (rules.yaml)
+
+The heuristic rules live in `services/analyzer/model/rules.yaml`. Each rule has:
+
+| Field      | Description                                                                  |
+|------------|------------------------------------------------------------------------------|
+| `phrase`   | Text to look for (case-insensitive substring match)                          |
+| `category` | `prompt_injection`, `jailbreak`, `data_extraction` or `phishing`             |
+| `score`    | Risk score between 0 and 1                                                   |
+| `enabled`  | Optional, defaults to `true`. Set to `false` to switch a rule off            |
+
+```yaml
+rules:
+  - phrase: "ignore previous instructions"
+    category: prompt_injection
+    score: 0.95
+    enabled: true
+```
+
+To use your own file, set `TENET_RULES_PATH` to its path. A custom file replaces the
+default rules (it is not merged), so copy `rules.yaml` and edit it.
+
+* The file is validated on load. Errors name the rule, e.g. `rule 12: score must be between 0 and 1`.
+* If the file is missing or invalid, the analyzer keeps using the built-in rules (or the last
+  valid version, if it was edited while running) and logs the error.
+* The file's modified time is checked before each scan, so edits apply without a restart.
+
+Check a file or see which rules match a prompt (run from `services/analyzer`):
+
+```bash
+python -m model.rules check path/to/rules.yaml
+python -m model.rules test-rule "ignore previous instructions" --rules path/to/rules.yaml
+```
