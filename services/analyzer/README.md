@@ -372,7 +372,8 @@ default rules (it is not merged), so copy `rules.yaml` and edit it.
 
 * The file is validated on load. Errors name the rule, e.g. `rule 12: score must be between 0 and 1`.
 * If the file is missing or invalid, the analyzer keeps using the built-in rules (or the last
-  valid version, if it was edited while running) and logs the error.
+  valid version, if it was edited or removed while running) and logs a warning (missing file) or an error (invalid file).
+* An empty `rules:` list is rejected, so a file can't silently turn detection off.
 * The file's modified time is checked before each scan, so edits apply without a restart.
 
 Check a file or see which rules match a prompt (run from `services/analyzer`):

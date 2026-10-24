@@ -77,7 +77,9 @@ def _describe(err: dict) -> str:
         return "score must be a number between 0 and 1" if field == "score" else msg
     if err["type"] == "bool_parsing" or err["type"] == "bool_type":
         return f"{field} must be true or false"
-    return msg
+    if err["type"] == "value_error":
+        return msg
+    return f"{field}: {msg}"
 
 
 def parse_rules(data) -> List[Rule]:
@@ -97,6 +99,9 @@ def parse_rules(data) -> List[Rule]:
         if not isinstance(item, dict):
             problems.append(f"rule {index}: must be a mapping with phrase, category, score")
             continue
+        if not all(isinstance(k, str) for k in item):
+            problems.append(f"rule {index}: field names must be strings")
+            continue
         try:
             rules.append(Rule(**item))
         except ValidationError as exc:
@@ -104,6 +109,8 @@ def parse_rules(data) -> List[Rule]:
                 problems.append(f"rule {index}: {_describe(err)}")
     if problems:
         raise RulesError("; ".join(problems))
+    if not rules:
+        raise RulesError("'rules' must contain at least one rule")
     return rules
 
 
@@ -112,7 +119,7 @@ def load_rules_file(path) -> List[Rule]:
     path = Path(path)
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise RulesError(f"cannot read rules file {path}: {exc}") from exc
     try:
         data = yaml.safe_load(text)
@@ -142,6 +149,43 @@ def group_rules(rules: List[Rule]) -> Dict[str, Dict[str, float]]:
         if current is None or rule.score > current:
             grouped[rule.category][phrase] = rule.score
     return grouped
+
+
+class RulesCache:
+    """Keeps the grouped rules from a file, reloading when its mtime changes.
+
+    ``fallback`` is used until a valid file has been loaded. After that, a
+    missing or broken file leaves the last valid rules in place.
+    """
+
+    def __init__(self, path, fallback: Dict[str, Dict[str, float]]):
+        self.path = Path(path)
+        self.grouped = fallback
+        self._mtime: Optional[float] = None
+        self._loaded = False
+        self._missing_logged = False
+
+    def refresh(self, force: bool = False) -> Dict[str, Dict[str, float]]:
+        try:
+            mtime = self.path.stat().st_mtime
+        except OSError:
+            if not self._missing_logged:
+                logger.warning("Rules file %s not found, keeping current rules", self.path)
+                self._missing_logged = True
+            self._mtime = None
+            return self.grouped
+        self._missing_logged = False
+        if not force and mtime == self._mtime:
+            return self.grouped
+        self._mtime = mtime
+        try:
+            self.grouped = group_rules(load_rules_file(self.path))
+        except RulesError as exc:
+            logger.error("Invalid rules file, keeping current rules: %s", exc)
+            return self.grouped
+        self._loaded = True
+        logger.info("Loaded rules from %s", self.path)
+        return self.grouped
 
 
 def match_rules(prompt: str, rules: List[Rule]) -> List[Tuple[Rule, bool]]:

@@ -38,7 +38,7 @@ def test_default_rules_match_builtin_dicts():
 
 
 def test_default_yaml_gives_same_results_as_builtin(tmp_path):
-    from_yaml = PhishingDetector(model_path=str(tmp_path))
+    from_yaml = PhishingDetector(model_path=str(tmp_path), rules_path=str(rules_mod.DEFAULT_RULES_PATH))
     builtin = PhishingDetector(model_path=str(tmp_path), rules_path=str(tmp_path / "nope.yaml"))
     for prompt in PROMPTS:
         assert from_yaml.detect(prompt).to_dict() == builtin.detect(prompt).to_dict()
@@ -139,3 +139,48 @@ def test_cli_check_and_test_rule(tmp_path, capsys):
     bad = write(tmp_path, "rules:\n  - {phrase: x, category: phishing, score: 2}\n", "bad.yaml")
     assert rules_mod._main(["check", str(bad)]) == 1
     assert "rule 1: score must be between 0 and 1" in capsys.readouterr().out
+
+
+def test_empty_rules_list_rejected(tmp_path):
+    with pytest.raises(RulesError, match="at least one rule"):
+        load_rules_file(write(tmp_path, "rules: []\n"))
+
+
+def test_non_string_key_is_a_rules_error(tmp_path):
+    with pytest.raises(RulesError, match="rule 1: field names must be strings"):
+        load_rules_file(write(tmp_path, "rules:\n  - {1: x, phrase: a, category: phishing, score: 0.5}\n"))
+
+
+def test_non_utf8_file_is_a_rules_error(tmp_path):
+    path = tmp_path / "rules.yaml"
+    path.write_bytes(b"rules:\n  - {phrase: \xff\xfe, category: phishing, score: 0.5}\n")
+    with pytest.raises(RulesError, match="cannot read"):
+        load_rules_file(path)
+
+
+def test_type_error_names_the_field(tmp_path):
+    with pytest.raises(RulesError, match="rule 1: phrase: "):
+        load_rules_file(write(tmp_path, "rules:\n  - {phrase: 123, category: phishing, score: 0.5}\n"))
+
+
+def test_deleted_file_keeps_last_valid_rules(tmp_path):
+    path = write(tmp_path, """
+        rules:
+          - {phrase: only phrase, category: phishing, score: 0.7}
+    """)
+    det = PhishingDetector(model_path=str(tmp_path), rules_path=str(path))
+    path.unlink()
+    assert det.detect("only phrase").risk_score == 0.7
+    assert det.detect("ignore previous instructions").risk_score == 0.0
+
+
+def test_service_heuristic_uses_rules_file(tmp_path, monkeypatch):
+    path = write(tmp_path, """
+        rules:
+          - {phrase: open sesame, category: jailbreak, score: 0.9}
+    """)
+    monkeypatch.setenv(rules_mod.RULES_PATH_ENV, str(path))
+    import app as analyzer_app
+    monkeypatch.setattr(analyzer_app, "_RULES_CACHE", None)
+    assert analyzer_app.heuristic_analysis("Open Sesame")["verdict"] == "malicious"
+    assert analyzer_app.heuristic_analysis("ignore previous instructions")["risk_score"] == 0.0
