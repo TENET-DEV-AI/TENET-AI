@@ -33,9 +33,7 @@ def test_default_rules_match_builtin_dicts():
     grouped = group_rules(load_rules_file(rules_mod.DEFAULT_RULES_PATH))
     # the yaml adds one extra rule: the real two-newline form of "\n\n###"
     injection = dict(grouped["prompt_injection"])
-    assert injection.pop("
-
-###") == 0.8
+    assert injection.pop("\n\n###") == 0.8
     assert injection == PhishingDetector.INJECTION_PATTERNS
     assert grouped["jailbreak"] == PhishingDetector.JAILBREAK_PATTERNS
     assert grouped["data_extraction"] == PhishingDetector.DATA_EXTRACTION_PATTERNS
