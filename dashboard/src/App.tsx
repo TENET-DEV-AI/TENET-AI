@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Shield, Activity, CheckCircle, XCircle, BarChart3,
-  RefreshCw, Search, Lock, Cpu, Menu, X, Save, Filter
+  RefreshCw, Search, Lock, Cpu, Menu, X, Save, Filter, Download
 } from 'lucide-react';
 import axios from 'axios';
 import './index.css';
@@ -26,6 +26,15 @@ import {
   SeverityDistributionChart,
   DetectionHeatmap,
 } from './components/charts';
+import {
+  buildExportFilename,
+  buildReportHtml,
+  downloadText,
+  printReport,
+  toCsv,
+  toJson,
+  type ExportFormat,
+} from './utils/exportEvents';
 
 interface Preset {
   name: string;
@@ -153,7 +162,7 @@ export default function App() {
     if (!presetName.trim()) return;
     const next = [...presets, { name: presetName.trim(), filters }];
     setPresets(next);
-    try { localStorage.setItem(PRESETS_KEY, JSON.stringify(next)); } catch {}
+    try { localStorage.setItem(PRESETS_KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
     setPresetName('');
     setShowPresetInput(false);
   }, [presetName, presets, filters]);
@@ -166,7 +175,7 @@ export default function App() {
   const deletePreset = useCallback((index: number) => {
     const next = presets.filter((_, i) => i !== index);
     setPresets(next);
-    try { localStorage.setItem(PRESETS_KEY, JSON.stringify(next)); } catch {}
+    try { localStorage.setItem(PRESETS_KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
   }, [presets]);
 
   useEffect(() => {
@@ -289,6 +298,18 @@ export default function App() {
 
 };
 
+  const handleExport = (format: ExportFormat) => {
+    // same rows as the table, with the resolved threat type filled in
+    const rows = withThreatType(filteredEvents).map(({ resolvedThreatType, ...ev }) => ({
+      ...ev,
+      threat_type: resolvedThreatType,
+    }));
+    const filename = buildExportFilename(format, filters, rows);
+    if (format === 'csv') downloadText(filename, toCsv(rows), 'text/csv');
+    else if (format === 'json') downloadText(filename, toJson(rows), 'application/json');
+    else printReport(buildReportHtml(rows, filename.replace(/\.pdf$/, ''), activeChips.map(([k, v]) => chipLabel(k, v))));
+  };
+
   const threatTypes = [...new Set(withThreatType(events).map(e => e.resolvedThreatType))];
 
   return (
@@ -393,6 +414,19 @@ export default function App() {
               {hasActiveFilters(filters) && (
                 <button className="clear-all-btn" onClick={clearAllFilters}>Clear all</button>
               )}
+            </div>
+
+            <div className="export-bar">
+              <span className="export-count">{filteredEvents.length} event{filteredEvents.length === 1 ? '' : 's'}</span>
+              <button onClick={() => handleExport('csv')} disabled={filteredEvents.length === 0} aria-label="Export filtered events as CSV">
+                <Download size={14} /> CSV
+              </button>
+              <button onClick={() => handleExport('json')} disabled={filteredEvents.length === 0} aria-label="Export filtered events as JSON">
+                <Download size={14} /> JSON
+              </button>
+              <button onClick={() => handleExport('pdf')} disabled={filteredEvents.length === 0} aria-label="Export filtered events as PDF report" title="Opens the print dialog, choose Save as PDF">
+                <Download size={14} /> PDF
+              </button>
             </div>
 
             {showFilters && (
