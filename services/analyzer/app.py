@@ -22,11 +22,13 @@ except ImportError:
 
 # Configure logging
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from services.utils.logging_config import setup_logging
 from services.security import SecurityManager
 from services.utils.metrics import PrometheusMiddleware, increment_detection
 from prometheus_client import make_asgi_app
+from model.rules import RulesCache, resolve_rules_path
 logger = setup_logging(__name__)
 
 # Environment configuration
@@ -437,12 +439,52 @@ def run_analysis(prompt: str) -> AnalysisResponse:
         )
 
 
+_BUILTIN_PATTERNS = {
+    "prompt_injection": {
+        "ignore previous instructions": 0.95,
+        "ignore all previous": 0.95,
+        "disregard your instructions": 0.90,
+        "forget your system prompt": 0.90,
+        "override system": 0.85,
+        "</s>": 0.90,
+        "<|system|>": 0.95,
+        "\n\n###": 0.80,
+    },
+    "jailbreak": {
+        "do anything now": 0.90,
+        "you are now dan": 0.95,
+        "no restrictions": 0.80,
+        "bypass your programming": 0.85,
+        "override your safety": 0.90,
+        "evil mode": 0.85,
+        "developer mode": 0.80,
+    },
+    "data_extraction": {
+        "show me your system prompt": 0.75,
+        "what are your instructions": 0.70,
+        "reveal your training": 0.75,
+        "list your rules": 0.65,
+    }
+}
+
+_RULES_CACHE = None
+
+
+def _rules_cache() -> RulesCache:
+    global _RULES_CACHE
+    if _RULES_CACHE is None:
+        fallback = dict(_BUILTIN_PATTERNS)
+        fallback.setdefault("phishing", {})
+        _RULES_CACHE = RulesCache(resolve_rules_path(), fallback)
+    return _RULES_CACHE
+
+
 def heuristic_analysis(prompt: str) -> dict:
     """Rule-based heuristic analysis.
 
         Scans the prompt against a curated set of known threat patterns across
-        three categories: ``prompt_injection``, ``jailbreak``, and
-        ``data_extraction``. Each pattern carries a risk score; the highest
+        categories (``prompt_injection``, ``jailbreak``, ``data_extraction``,
+        ``phishing``) loaded from ``rules.yaml`` or ``TENET_RULES_PATH``. Each pattern carries a risk score; the highest
         matched score determines the overall verdict.
 
         Args:
@@ -471,35 +513,9 @@ def heuristic_analysis(prompt: str) -> dict:
     max_score = 0.0
     threat_type = None
     
-    # Pattern definitions with scores
-    patterns = {
-        "prompt_injection": {
-            "ignore previous instructions": 0.95,
-            "ignore all previous": 0.95,
-            "disregard your instructions": 0.90,
-            "forget your system prompt": 0.90,
-            "override system": 0.85,
-            "</s>": 0.90,
-            "<|system|>": 0.95,
-            "\n\n###": 0.80,
-        },
-        "jailbreak": {
-            "do anything now": 0.90,
-            "you are now dan": 0.95,
-            "no restrictions": 0.80,
-            "bypass your programming": 0.85,
-            "override your safety": 0.90,
-            "evil mode": 0.85,
-            "developer mode": 0.80,
-        },
-        "data_extraction": {
-            "show me your system prompt": 0.75,
-            "what are your instructions": 0.70,
-            "reveal your training": 0.75,
-            "list your rules": 0.65,
-        }
-    }
-    
+    # Rules come from rules.yaml / TENET_RULES_PATH; edits apply without a restart
+    patterns = _rules_cache().refresh()
+
     for category, category_patterns in patterns.items():
         for pattern, score in category_patterns.items():
             if pattern in prompt_lower:
