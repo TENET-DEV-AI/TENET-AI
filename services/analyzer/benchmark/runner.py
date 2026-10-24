@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-from services.analyzer.app import run_analysis, load_ml_models
+from services.analyzer.app import run_analysis, load_ml_models, load_config
 from services.analyzer.benchmark.metrics import calculate_metrics
 
 
@@ -16,7 +16,9 @@ class DetectionBenchmarkRunner:
 
     def __init__(self, dataset_path: str):
         self.dataset_path = Path(dataset_path)
-        # Ensure ML model is loaded if present in MODEL_PATH
+        # The benchmark skips FastAPI startup, so apply env settings (MODEL_PATH,
+        # PROMPT_INJECTION_THRESHOLD) here before loading the model.
+        load_config()
         load_ml_models()
 
     def load_dataset(self) -> List[Dict[str, Any]]:

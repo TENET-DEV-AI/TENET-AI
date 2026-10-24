@@ -32,20 +32,42 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from services.utils.logging_config import setup_logging, correlation_id_var
+from services.utils.env_validator import port, positive_float, positive_int, validate_env_vars
 
 logger = setup_logging(__name__)
 
 
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-REDIS_TIMEOUT_S = float(os.getenv("REDIS_TIMEOUT_S", 2.0))
-API_HOST = os.getenv("API_HOST", "0.0.0.0")
-API_PORT = int(os.getenv("API_PORT", 8000))
+# Settings start at their defaults so importing this module never fails on a bad
+# env var. load_config() reads and checks the real values in the startup hook.
+_ENV_DEFAULTS = {
+    "REDIS_HOST": "localhost",
+    "REDIS_PORT": 6379,
+    "REDIS_TIMEOUT_S": 2.0,
+    "API_HOST": "0.0.0.0",
+    "API_PORT": 8000,
+    "CB_FAILURE_THRESHOLD": 3,
+    "CB_RECOVERY_TIMEOUT_S": 30.0,
+    "CB_HALF_OPEN_MAX_CALLS": 1,
+}
+_ENV_TYPES = {
+    "REDIS_PORT": port,
+    "REDIS_TIMEOUT_S": positive_float,
+    "API_PORT": port,
+    "CB_FAILURE_THRESHOLD": positive_int,
+    "CB_RECOVERY_TIMEOUT_S": positive_float,
+    "CB_HALF_OPEN_MAX_CALLS": positive_int,
+}
+
+REDIS_HOST = _ENV_DEFAULTS["REDIS_HOST"]
+REDIS_PORT = _ENV_DEFAULTS["REDIS_PORT"]
+REDIS_TIMEOUT_S = _ENV_DEFAULTS["REDIS_TIMEOUT_S"]
+API_HOST = _ENV_DEFAULTS["API_HOST"]
+API_PORT = _ENV_DEFAULTS["API_PORT"]
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 
-CB_FAILURE_THRESHOLD = int(os.getenv("CB_FAILURE_THRESHOLD", 3))
-CB_RECOVERY_TIMEOUT_S = float(os.getenv("CB_RECOVERY_TIMEOUT_S", 30.0))
-CB_HALF_OPEN_MAX_CALLS = int(os.getenv("CB_HALF_OPEN_MAX_CALLS", 1))
+CB_FAILURE_THRESHOLD = _ENV_DEFAULTS["CB_FAILURE_THRESHOLD"]
+CB_RECOVERY_TIMEOUT_S = _ENV_DEFAULTS["CB_RECOVERY_TIMEOUT_S"]
+CB_HALF_OPEN_MAX_CALLS = _ENV_DEFAULTS["CB_HALF_OPEN_MAX_CALLS"]
 
 
 class CircuitState(Enum):
@@ -231,9 +253,37 @@ async def redis_call(coro):
     return None
 
 
+def load_config() -> None:
+    """Read and validate env vars, then apply them to the module settings.
+
+    Raises:
+        EnvValidationError: If any value is invalid. Lists every bad variable.
+    """
+    global REDIS_HOST, REDIS_PORT, REDIS_TIMEOUT_S, API_HOST, API_PORT
+    global CB_FAILURE_THRESHOLD, CB_RECOVERY_TIMEOUT_S, CB_HALF_OPEN_MAX_CALLS
+
+    config = validate_env_vars([], optional_vars=_ENV_DEFAULTS, types=_ENV_TYPES)
+
+    REDIS_HOST = config["REDIS_HOST"]
+    REDIS_PORT = config["REDIS_PORT"]
+    REDIS_TIMEOUT_S = config["REDIS_TIMEOUT_S"]
+    API_HOST = config["API_HOST"]
+    API_PORT = config["API_PORT"]
+    CB_FAILURE_THRESHOLD = config["CB_FAILURE_THRESHOLD"]
+    CB_RECOVERY_TIMEOUT_S = config["CB_RECOVERY_TIMEOUT_S"]
+    CB_HALF_OPEN_MAX_CALLS = config["CB_HALF_OPEN_MAX_CALLS"]
+
+    # redis_cb was built at import time with the defaults.
+    redis_cb.failure_threshold = CB_FAILURE_THRESHOLD
+    redis_cb.recovery_timeout = CB_RECOVERY_TIMEOUT_S
+    redis_cb.half_open_max_calls = CB_HALF_OPEN_MAX_CALLS
+
+
 @app.on_event("startup")
 async def startup() -> None:
     global redis_client
+
+    load_config()
 
     try:
         redis_client = redis.Redis(
@@ -623,4 +673,5 @@ async def export_audit_logs(limit: int = Query(default=200, ge=1, le=2000), x_ap
 if __name__ == "__main__":
     import uvicorn
 
+    load_config()
     uvicorn.run(app, host=API_HOST, port=API_PORT)
