@@ -483,8 +483,8 @@ def heuristic_analysis(prompt: str) -> dict:
     """Rule-based heuristic analysis.
 
         Scans the prompt against a curated set of known threat patterns across
-        three categories: ``prompt_injection``, ``jailbreak``, and
-        ``data_extraction``. Each pattern carries a risk score; the highest
+        categories (``prompt_injection``, ``jailbreak``, ``data_extraction``,
+        ``phishing``) loaded from ``rules.yaml`` or ``TENET_RULES_PATH``. Each pattern carries a risk score; the highest
         matched score determines the overall verdict.
 
         Args:

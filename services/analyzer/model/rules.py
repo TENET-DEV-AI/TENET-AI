@@ -12,6 +12,7 @@ Usage from the command line (run inside services/analyzer):
     python -m model.rules test-rule "some prompt" [--rules path]
 """
 import argparse
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -114,6 +115,24 @@ def parse_rules(data) -> List[Rule]:
     return rules
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Safe loader that rejects duplicate mapping keys instead of keeping the last."""
+
+    def construct_mapping(self, node, deep=False):
+        if isinstance(node, yaml.MappingNode):
+            seen = set()
+            for key_node, _ in node.value:
+                if isinstance(key_node, yaml.ScalarNode):
+                    if key_node.value in seen:
+                        raise yaml.constructor.ConstructorError(
+                            None, None,
+                            f"duplicate key {key_node.value!r}",
+                            key_node.start_mark,
+                        )
+                    seen.add(key_node.value)
+        return super().construct_mapping(node, deep=deep)
+
+
 def load_rules_file(path) -> List[Rule]:
     """Load and validate a rules file. Raises RulesError on any problem."""
     path = Path(path)
@@ -122,7 +141,7 @@ def load_rules_file(path) -> List[Rule]:
     except (OSError, UnicodeError) as exc:
         raise RulesError(f"cannot read rules file {path}: {exc}") from exc
     try:
-        data = yaml.safe_load(text)
+        data = yaml.load(text, Loader=_UniqueKeyLoader)
     except yaml.YAMLError as exc:
         raise RulesError(f"invalid YAML in {path}: {exc}") from exc
     return parse_rules(data)
@@ -152,7 +171,7 @@ def group_rules(rules: List[Rule]) -> Dict[str, Dict[str, float]]:
 
 
 class RulesCache:
-    """Keeps the grouped rules from a file, reloading when its mtime changes.
+    """Keeps the grouped rules from a file, reloading when its content changes.
 
     ``fallback`` is used until a valid file has been loaded. After that, a
     missing or broken file leaves the last valid rules in place.
@@ -161,23 +180,24 @@ class RulesCache:
     def __init__(self, path, fallback: Dict[str, Dict[str, float]]):
         self.path = Path(path)
         self.grouped = fallback
-        self._mtime: Optional[float] = None
+        self._digest: Optional[bytes] = None
         self._loaded = False
         self._missing_logged = False
 
     def refresh(self, force: bool = False) -> Dict[str, Dict[str, float]]:
         try:
-            mtime = self.path.stat().st_mtime
+            data = self.path.read_bytes()
         except OSError:
             if not self._missing_logged:
                 logger.warning("Rules file %s not found, keeping current rules", self.path)
                 self._missing_logged = True
-            self._mtime = None
+            self._digest = None
             return self.grouped
         self._missing_logged = False
-        if not force and mtime == self._mtime:
+        digest = hashlib.sha256(data).digest()
+        if not force and digest == self._digest:
             return self.grouped
-        self._mtime = mtime
+        self._digest = digest
         try:
             self.grouped = group_rules(load_rules_file(self.path))
         except RulesError as exc:

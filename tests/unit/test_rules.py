@@ -31,7 +31,12 @@ def write(tmp_path, body, name="rules.yaml"):
 
 def test_default_rules_match_builtin_dicts():
     grouped = group_rules(load_rules_file(rules_mod.DEFAULT_RULES_PATH))
-    assert grouped["prompt_injection"] == PhishingDetector.INJECTION_PATTERNS
+    # the yaml adds one extra rule: the real two-newline form of "\n\n###"
+    injection = dict(grouped["prompt_injection"])
+    assert injection.pop("
+
+###") == 0.8
+    assert injection == PhishingDetector.INJECTION_PATTERNS
     assert grouped["jailbreak"] == PhishingDetector.JAILBREAK_PATTERNS
     assert grouped["data_extraction"] == PhishingDetector.DATA_EXTRACTION_PATTERNS
     assert grouped["phishing"] == PhishingDetector.PHISHING_PATTERNS
@@ -184,3 +189,33 @@ def test_service_heuristic_uses_rules_file(tmp_path, monkeypatch):
     monkeypatch.setattr(analyzer_app, "_RULES_CACHE", None)
     assert analyzer_app.heuristic_analysis("Open Sesame")["verdict"] == "malicious"
     assert analyzer_app.heuristic_analysis("ignore previous instructions")["risk_score"] == 0.0
+
+
+def test_duplicate_key_in_rule_is_rejected(tmp_path):
+    path = write(tmp_path, """
+        rules:
+          - phrase: first
+            phrase: second
+            category: phishing
+            score: 0.7
+    """)
+    with pytest.raises(RulesError, match="invalid YAML"):
+        load_rules_file(path)
+
+
+def test_same_mtime_edit_is_picked_up(tmp_path):
+    path = write(tmp_path, """
+        rules:
+          - {phrase: first phrase, category: phishing, score: 0.7}
+    """)
+    old = path.stat().st_mtime
+    cache = rules_mod.RulesCache(path, {})
+    assert "first phrase" in cache.refresh()["phishing"]
+    path.write_text("rules:\n  - {phrase: other phrase, category: phishing, score: 0.7}\n")
+    os.utime(path, (old, old))
+    assert "other phrase" in cache.refresh()["phishing"]
+
+
+def test_real_newline_pattern_matches_with_default_rules(tmp_path):
+    det = PhishingDetector(model_path=str(tmp_path), rules_path=str(rules_mod.DEFAULT_RULES_PATH))
+    assert det.detect("hello\n\n### new").risk_score == 0.8

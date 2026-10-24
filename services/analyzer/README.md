@@ -374,7 +374,7 @@ default rules (it is not merged), so copy `rules.yaml` and edit it.
 * If the file is missing or invalid, the analyzer keeps using the built-in rules (or the last
   valid version, if it was edited or removed while running) and logs a warning (missing file) or an error (invalid file).
 * An empty `rules:` list is rejected, so a file can't silently turn detection off.
-* The file's modified time is checked before each scan, so edits apply without a restart.
+* The file is re-read and compared by content before each scan, so edits apply without a restart.
 
 Check a file or see which rules match a prompt (run from `services/analyzer`):
 

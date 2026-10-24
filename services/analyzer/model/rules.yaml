@@ -43,6 +43,12 @@ rules:
     category: prompt_injection
     score: 0.8
     enabled: true
+  - phrase: "
+
+###"
+    category: prompt_injection
+    score: 0.8
+    enabled: true
   - phrase: "[system]"
     category: prompt_injection
     score: 0.85
