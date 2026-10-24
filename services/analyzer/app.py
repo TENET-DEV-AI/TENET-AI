@@ -27,18 +27,57 @@ sys.path.insert(0, str(Path(__file__).parent))
 from services.utils.logging_config import setup_logging
 from services.security import SecurityManager
 from services.utils.metrics import PrometheusMiddleware, increment_detection
+from services.utils.env_validator import non_negative_float, port, probability, validate_env_vars
 from prometheus_client import make_asgi_app
 from model.rules import RulesCache, resolve_rules_path
 logger = setup_logging(__name__)
 
-# Environment configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-API_HOST = os.getenv("API_HOST", "0.0.0.0")
-API_PORT = int(os.getenv("API_PORT", 8100))
-MODEL_PATH = os.getenv("MODEL_PATH", "./models/trained")
-PROMPT_INJECTION_THRESHOLD = float(os.getenv("PROMPT_INJECTION_THRESHOLD", 0.75))
-SHUTDOWN_TIMEOUT = float(os.getenv("SHUTDOWN_TIMEOUT", 10.0))
+# Environment configuration. Settings start at their defaults so importing this
+# module never fails on a bad env var. load_config() reads and checks the real
+# values in the startup hook.
+_ENV_DEFAULTS = {
+    "REDIS_HOST": "localhost",
+    "REDIS_PORT": 6379,
+    "API_HOST": "0.0.0.0",
+    "API_PORT": 8100,
+    "MODEL_PATH": "./models/trained",
+    "PROMPT_INJECTION_THRESHOLD": 0.75,
+    "SHUTDOWN_TIMEOUT": 10.0,
+}
+_ENV_TYPES = {
+    "REDIS_PORT": port,
+    "API_PORT": port,
+    "PROMPT_INJECTION_THRESHOLD": probability,
+    "SHUTDOWN_TIMEOUT": non_negative_float,
+}
+
+REDIS_HOST = _ENV_DEFAULTS["REDIS_HOST"]
+REDIS_PORT = _ENV_DEFAULTS["REDIS_PORT"]
+API_HOST = _ENV_DEFAULTS["API_HOST"]
+API_PORT = _ENV_DEFAULTS["API_PORT"]
+MODEL_PATH = _ENV_DEFAULTS["MODEL_PATH"]
+PROMPT_INJECTION_THRESHOLD = _ENV_DEFAULTS["PROMPT_INJECTION_THRESHOLD"]
+SHUTDOWN_TIMEOUT = _ENV_DEFAULTS["SHUTDOWN_TIMEOUT"]
+
+
+def load_config() -> None:
+    """Read and validate env vars, then apply them to the module settings.
+
+    Raises:
+        EnvValidationError: If any value is invalid. Lists every bad variable.
+    """
+    global REDIS_HOST, REDIS_PORT, API_HOST, API_PORT, MODEL_PATH
+    global PROMPT_INJECTION_THRESHOLD, SHUTDOWN_TIMEOUT
+
+    config = validate_env_vars([], optional_vars=_ENV_DEFAULTS, types=_ENV_TYPES)
+
+    REDIS_HOST = config["REDIS_HOST"]
+    REDIS_PORT = config["REDIS_PORT"]
+    API_HOST = config["API_HOST"]
+    API_PORT = config["API_PORT"]
+    MODEL_PATH = config["MODEL_PATH"]
+    PROMPT_INJECTION_THRESHOLD = config["PROMPT_INJECTION_THRESHOLD"]
+    SHUTDOWN_TIMEOUT = config["SHUTDOWN_TIMEOUT"]
 
 # FastAPI app
 app = FastAPI(
@@ -143,7 +182,8 @@ async def startup():
     """Initialize connections and models on startup.
 
         Lifecycle event handler triggered automatically by FastAPI on application
-        start. Performs three initialization steps in order:
+        start. Validates env config with ``load_config()``, then performs three
+        initialization steps in order:
 
         1. Connects to Redis and verifies connectivity via ping.
         2. Loads the ML model and vectorizer from ``MODEL_PATH``.
@@ -153,11 +193,15 @@ async def startup():
         rather than raising — callers should check ``/health`` before use.
 
         Raises:
+        EnvValidationError: If an env var has a bad value, so the service fails
+        fast with a readable message.
         Exception: Logged internally; does not propagate to prevent startup
         failure when Redis or models are temporarily unavailable.
         """
     global redis_client, ml_model, vectorizer, background_task, stop_event
-    
+
+    load_config()
+
     # Connect to Redis
     try:
         redis_client = redis.Redis(
@@ -820,4 +864,5 @@ async def process_event_queue():
 
 if __name__ == "__main__":
     import uvicorn
+    load_config()
     uvicorn.run(app, host=API_HOST, port=API_PORT)
