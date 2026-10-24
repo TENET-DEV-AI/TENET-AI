@@ -141,7 +141,8 @@ def parse_rules_bytes(raw: bytes, source="rules file") -> List[Rule]:
         raise RulesError(f"cannot read rules file {source}: {exc}") from exc
     try:
         data = yaml.load(text, Loader=_UniqueKeyLoader)
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, ValueError, RecursionError) as exc:
+        # PyYAML can raise plain ValueError (e.g. an impossible date like 2023-13-45)
         raise RulesError(f"invalid YAML in {source}: {exc}") from exc
     return parse_rules(data)
 

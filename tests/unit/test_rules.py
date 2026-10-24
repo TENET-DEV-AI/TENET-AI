@@ -242,3 +242,15 @@ def test_unreadable_rules_file_logs_the_error(tmp_path, caplog):
         cache.refresh()
     assert "Cannot read rules file" in caplog.text
 
+
+
+def test_invalid_date_value_is_a_rules_error_and_keeps_old_rules(tmp_path):
+    bad = b"rules:\n  - {phrase: x, category: phishing, score: 0.7, added: 2023-13-45}\n"
+    with pytest.raises(RulesError):
+        rules_mod.parse_rules_bytes(bad)
+    path = tmp_path / "rules.yaml"
+    path.write_text("rules:\n  - {phrase: good phrase, category: phishing, score: 0.7}\n")
+    cache = rules_mod.RulesCache(path, {})
+    assert "good phrase" in cache.refresh()["phishing"]
+    path.write_bytes(bad)
+    assert "good phrase" in cache.refresh()["phishing"]
