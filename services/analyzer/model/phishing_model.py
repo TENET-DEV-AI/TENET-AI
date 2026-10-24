@@ -109,6 +109,7 @@ class PhishingDetector:
         "<|system|>": 0.95,
         "<|im_start|>": 0.90,
         "\\n\\n###": 0.80,
+        "\n\n###": 0.80,
         "[system]": 0.85,
         "system:": 0.75,
     }

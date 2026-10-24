@@ -133,18 +133,27 @@ class _UniqueKeyLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
+def parse_rules_bytes(raw: bytes, source="rules file") -> List[Rule]:
+    """Decode, parse and validate rules from raw bytes. Raises RulesError."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError as exc:
+        raise RulesError(f"cannot read rules file {source}: {exc}") from exc
+    try:
+        data = yaml.load(text, Loader=_UniqueKeyLoader)
+    except yaml.YAMLError as exc:
+        raise RulesError(f"invalid YAML in {source}: {exc}") from exc
+    return parse_rules(data)
+
+
 def load_rules_file(path) -> List[Rule]:
     """Load and validate a rules file. Raises RulesError on any problem."""
     path = Path(path)
     try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
+        raw = path.read_bytes()
+    except OSError as exc:
         raise RulesError(f"cannot read rules file {path}: {exc}") from exc
-    try:
-        data = yaml.load(text, Loader=_UniqueKeyLoader)
-    except yaml.YAMLError as exc:
-        raise RulesError(f"invalid YAML in {path}: {exc}") from exc
-    return parse_rules(data)
+    return parse_rules_bytes(raw, path)
 
 
 def resolve_rules_path(path: Optional[str] = None) -> Path:
@@ -187,9 +196,9 @@ class RulesCache:
     def refresh(self, force: bool = False) -> Dict[str, Dict[str, float]]:
         try:
             data = self.path.read_bytes()
-        except OSError:
+        except OSError as exc:
             if not self._missing_logged:
-                logger.warning("Rules file %s not found, keeping current rules", self.path)
+                logger.warning("Cannot read rules file %s (%s), keeping current rules", self.path, exc)
                 self._missing_logged = True
             self._digest = None
             return self.grouped
@@ -197,9 +206,11 @@ class RulesCache:
         digest = hashlib.sha256(data).digest()
         if not force and digest == self._digest:
             return self.grouped
+        # Parse the bytes we just hashed, so the stored digest always matches
+        # what was validated (no second read that could see a different file).
         self._digest = digest
         try:
-            self.grouped = group_rules(load_rules_file(self.path))
+            self.grouped = group_rules(parse_rules_bytes(data, self.path))
         except RulesError as exc:
             logger.error("Invalid rules file, keeping current rules: %s", exc)
             return self.grouped

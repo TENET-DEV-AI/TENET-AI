@@ -31,10 +31,7 @@ def write(tmp_path, body, name="rules.yaml"):
 
 def test_default_rules_match_builtin_dicts():
     grouped = group_rules(load_rules_file(rules_mod.DEFAULT_RULES_PATH))
-    # the yaml adds one extra rule: the real two-newline form of "\n\n###"
-    injection = dict(grouped["prompt_injection"])
-    assert injection.pop("\n\n###") == 0.8
-    assert injection == PhishingDetector.INJECTION_PATTERNS
+    assert grouped["prompt_injection"] == PhishingDetector.INJECTION_PATTERNS
     assert grouped["jailbreak"] == PhishingDetector.JAILBREAK_PATTERNS
     assert grouped["data_extraction"] == PhishingDetector.DATA_EXTRACTION_PATTERNS
     assert grouped["phishing"] == PhishingDetector.PHISHING_PATTERNS
@@ -217,3 +214,31 @@ def test_same_mtime_edit_is_picked_up(tmp_path):
 def test_real_newline_pattern_matches_with_default_rules(tmp_path):
     det = PhishingDetector(model_path=str(tmp_path), rules_path=str(rules_mod.DEFAULT_RULES_PATH))
     assert det.detect("hello\n\n### new").risk_score == 0.8
+
+
+def test_fallback_rules_match_real_newline_pattern(tmp_path):
+    det = PhishingDetector(model_path=str(tmp_path), rules_path=str(tmp_path / "nope.yaml"))
+    assert det.detect("hello\n\n### new").risk_score == 0.8
+
+
+def test_cache_digest_matches_the_bytes_that_were_parsed(tmp_path):
+    path = write(tmp_path, """
+        rules:
+          - {phrase: good phrase, category: phishing, score: 0.7}
+    """)
+    cache = rules_mod.RulesCache(path, {})
+    assert "good phrase" in cache.refresh()["phishing"]
+    # invalid content is rejected and the old rules stay
+    path.write_text("rules: nope\n")
+    assert "good phrase" in cache.refresh()["phishing"]
+    # going back to the earlier valid bytes is picked up again
+    path.write_text("rules:\n  - {phrase: back again, category: phishing, score: 0.7}\n")
+    assert "back again" in cache.refresh()["phishing"]
+
+
+def test_unreadable_rules_file_logs_the_error(tmp_path, caplog):
+    cache = rules_mod.RulesCache(tmp_path, {})  # a directory cannot be read as a file
+    with caplog.at_level("WARNING"):
+        cache.refresh()
+    assert "Cannot read rules file" in caplog.text
+
