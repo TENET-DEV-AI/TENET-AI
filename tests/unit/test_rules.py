@@ -254,3 +254,13 @@ def test_invalid_date_value_is_a_rules_error_and_keeps_old_rules(tmp_path):
     assert "good phrase" in cache.refresh()["phishing"]
     path.write_bytes(bad)
     assert "good phrase" in cache.refresh()["phishing"]
+
+
+def test_service_fallback_includes_phishing_patterns(tmp_path, monkeypatch):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "services" / "analyzer"))
+    import app as analyzer_app
+
+    monkeypatch.setenv("TENET_RULES_PATH", str(tmp_path / "missing.yaml"))
+    monkeypatch.setattr(analyzer_app, "_RULES_CACHE", None)
+    patterns = analyzer_app._rules_cache().refresh()
+    assert patterns["phishing"] == PhishingDetector.PHISHING_PATTERNS

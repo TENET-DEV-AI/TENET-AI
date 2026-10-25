@@ -518,7 +518,8 @@ def _rules_cache() -> RulesCache:
     global _RULES_CACHE
     if _RULES_CACHE is None:
         fallback = dict(_BUILTIN_PATTERNS)
-        fallback.setdefault("phishing", {})
+        from model.phishing_model import PhishingDetector
+        fallback["phishing"] = dict(PhishingDetector.PHISHING_PATTERNS)
         _RULES_CACHE = RulesCache(resolve_rules_path(), fallback)
     return _RULES_CACHE
 
