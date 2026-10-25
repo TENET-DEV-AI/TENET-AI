@@ -823,3 +823,39 @@ table th:last-child {
     margin-top: 5px;
     padding: 8px;
 }
+.export-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.export-count {
+  margin-right: auto;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.export-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.export-bar button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.export-bar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
