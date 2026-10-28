@@ -81,3 +81,75 @@ def test_benchmark_runner_invalid_dataset_types(tmp_path):
     with pytest.raises(ValueError, match="'category' must be a string"):
         runner2.load_dataset()
 
+
+
+def test_calculate_metrics_fp_and_fn():
+    # true_label=0 but score=0.9 -> FP
+    # true_label=1 but score=0.1 -> FN
+    y_true = [0, 1]
+    y_scores = [0.9, 0.1]
+    metrics = calculate_metrics(y_true, y_scores, threshold=0.5)
+    assert metrics["confusion_matrix"]["fp"] == 1
+    assert metrics["confusion_matrix"]["fn"] == 1
+    assert metrics["precision"] == 0.0
+    assert metrics["recall"] == 0.0
+    assert metrics["f1_score"] == 0.0
+
+
+def test_benchmark_runner_dataset_errors(tmp_path):
+    # File not found
+    runner = DetectionBenchmarkRunner(str(tmp_path / "nonexistent.json"))
+    with pytest.raises(FileNotFoundError):
+        runner.load_dataset()
+
+    # Not a list
+    p1 = tmp_path / "not_list.json"
+    p1.write_text(json.dumps({"prompt": "hi"}))
+    runner1 = DetectionBenchmarkRunner(str(p1))
+    with pytest.raises(ValueError, match="must contain a list"):
+        runner1.load_dataset()
+
+    # Missing prompt or label
+    p2 = tmp_path / "missing_keys.json"
+    p2.write_text(json.dumps([{"prompt": "hi"}]))
+    runner2 = DetectionBenchmarkRunner(str(p2))
+    with pytest.raises(ValueError, match="missing 'prompt' or 'label'"):
+        runner2.load_dataset()
+
+    # Invalid label
+    p3 = tmp_path / "bad_label.json"
+    p3.write_text(json.dumps([{"prompt": "hi", "label": "unknown_label"}]))
+    runner3 = DetectionBenchmarkRunner(str(p3))
+    with pytest.raises(ValueError, match="Must be 'malicious' or 'benign'"):
+        runner3.load_dataset()
+
+
+def test_check_regression(tmp_path):
+    report = {
+        "summary": {
+            "f1_score": 0.75,
+            "precision": 0.70,
+        }
+    }
+    # Test threshold failure
+    regressions = DetectionBenchmarkRunner.check_regression(
+        report, min_f1=0.80, min_precision=0.80
+    )
+    assert len(regressions) == 2
+
+    # Test baseline comparison regression
+    baseline_file = tmp_path / "baseline.json"
+    baseline_data = {
+        "summary": {
+            "f1_score": 0.85,
+            "precision": 0.80,
+        }
+    }
+    baseline_file.write_text(json.dumps(baseline_data))
+
+    regressions2 = DetectionBenchmarkRunner.check_regression(
+        report, min_f1=0.70, min_precision=0.60, baseline_path=str(baseline_file)
+    )
+    assert len(regressions2) == 2
+    assert "F1 score regressed" in regressions2[0]
+    assert "Precision regressed" in regressions2[1]

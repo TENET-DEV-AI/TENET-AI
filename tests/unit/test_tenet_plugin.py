@@ -1,6 +1,7 @@
 """Unit tests for framework-agnostic TENET plugin."""
 
-from tenet_plugin import TenetSecurityPlugin, TenetPluginError
+import pytest
+from tenet_plugin import TenetPluginError, TenetSecurityPlugin
 
 
 class DummyResponse:
@@ -71,6 +72,22 @@ def test_secure_call_allows_when_benign():
 
     assert result["status"] == "success"
     assert result["llm_response"] == "ok"
+
+
+def test_invalid_fail_mode_raises():
+    with pytest.raises(ValueError, match="fail_mode must be 'open' or 'closed'"):
+        TenetSecurityPlugin(fail_mode="invalid")
+
+
+def test_fail_open_returns_unavailable_on_error():
+    plugin = TenetSecurityPlugin(
+        fail_mode="open",
+        session=DummySession(err=RuntimeError("connection error")),
+    )
+    res = plugin.inspect_prompt("test", "gpt-4")
+    assert res.blocked is False
+    assert res.verdict == "inspection_unavailable"
+    assert "error" in res.raw
 
 
 def test_fail_closed_raises_if_inspection_unavailable():
