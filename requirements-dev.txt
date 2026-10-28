@@ -8,12 +8,12 @@
 pytest>=9.1.1
 pytest-asyncio>=1.4.0
 pytest-cov>=4.1.0
-pytest-mock>=3.15.1
+pytest-mock>=3.17.0
 faker>=40.43.0
 
 # Code Quality
 black>=26.10.1
-ruff>=0.15.20
+ruff>=0.17.1
 mypy>=2.3.0
 isort>=8.0.1
 
