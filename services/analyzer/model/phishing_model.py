@@ -27,6 +27,10 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 from services.utils.logging_config import setup_logging
 
+# Make `model.rules` importable even when this file is run as a script
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from model.rules import RulesCache, resolve_rules_path
+
 logger = setup_logging(__name__)
 
 # Default paths
@@ -92,7 +96,8 @@ class PhishingDetector:
     2. TF-IDF + ML classification (trained model)
     """
     
-    # Threat patterns with risk scores
+    # Built-in threat patterns with risk scores. These are the fallback used when
+    # rules.yaml (or the file set in TENET_RULES_PATH) is missing or invalid.
     INJECTION_PATTERNS = {
         "ignore previous instructions": 0.95,
         "ignore all previous": 0.95,
@@ -104,6 +109,7 @@ class PhishingDetector:
         "<|system|>": 0.95,
         "<|im_start|>": 0.90,
         "\\n\\n###": 0.80,
+        "\n\n###": 0.80,
         "[system]": 0.85,
         "system:": 0.75,
     }
@@ -145,13 +151,24 @@ class PhishingDetector:
         "credit card details": 0.80,
     }
     
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_path: Optional[str] = None, rules_path: Optional[str] = None):
         """
         Initialize the detector.
         
         Args:
             model_path: Path to trained model files. If None, uses heuristics only.
+            rules_path: Path to a rules YAML file. Falls back to TENET_RULES_PATH,
+                then the bundled rules.yaml.
         """
+        self._rules_path = resolve_rules_path(rules_path)
+        self._rules_cache = RulesCache(self._rules_path, {
+            "prompt_injection": self.INJECTION_PATTERNS,
+            "jailbreak": self.JAILBREAK_PATTERNS,
+            "data_extraction": self.DATA_EXTRACTION_PATTERNS,
+            "phishing": self.PHISHING_PATTERNS,
+        })
+        self._pattern_sets = []
+        self._refresh_rules(force=True)
         self.model_path = model_path or DEFAULT_MODEL_PATH
         self.model: Optional[LogisticRegression] = None
         self.vectorizer: Optional[TfidfVectorizer] = None
@@ -160,6 +177,20 @@ class PhishingDetector:
         # Try to load trained model
         self._load_model()
     
+    def _refresh_rules(self, force: bool = False) -> None:
+        """Reload the rules file if its modified time changed.
+
+        A broken or missing file keeps whatever rules were active before
+        (the built-in ones on first load), so scans never fail because of it.
+        """
+        grouped = self._rules_cache.refresh(force=force)
+        self._pattern_sets = [
+            (grouped["prompt_injection"], ThreatType.PROMPT_INJECTION),
+            (grouped["jailbreak"], ThreatType.JAILBREAK),
+            (grouped["data_extraction"], ThreatType.DATA_EXTRACTION),
+            (grouped["phishing"], ThreatType.PHISHING),
+        ]
+
     def _load_model(self) -> bool:
         """Load the trained ML model if available."""
         try:
@@ -279,15 +310,10 @@ class PhishingDetector:
         max_score = 0.0
         threat_type = None
         
-        # Check all pattern categories
-        pattern_sets = [
-            (self.INJECTION_PATTERNS, ThreatType.PROMPT_INJECTION),
-            (self.JAILBREAK_PATTERNS, ThreatType.JAILBREAK),
-            (self.DATA_EXTRACTION_PATTERNS, ThreatType.DATA_EXTRACTION),
-            (self.PHISHING_PATTERNS, ThreatType.PHISHING),
-        ]
+        # Pick up edits to the rules file without a restart
+        self._refresh_rules()
         
-        for patterns, t_type in pattern_sets:
+        for patterns, t_type in self._pattern_sets:
             for pattern, score in patterns.items():
                 if pattern in prompt_lower:
                     matched_patterns.append(pattern)
