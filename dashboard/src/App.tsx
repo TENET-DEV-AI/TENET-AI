@@ -3,7 +3,7 @@ import {
   Shield, Activity, CheckCircle, XCircle, BarChart3,
   RefreshCw, Search, Lock, Cpu, Menu, X, Save, Filter, Download
 } from 'lucide-react';
-import axios from 'axios';
+import { createRefreshCoordinator, fetchDashboardSnapshot } from './utils/dashboardRefresh';
 import './index.css';
 import './App.css';
 
@@ -125,6 +125,7 @@ export default function App() {
   const [showFilters, setShowFilters] = useState(false);
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const searchRef = useRef<HTMLInputElement>(null);
+  const refreshRef = useRef<ReturnType<typeof createRefreshCoordinator> | null>(null);
 
   const updateFilter = useCallback((key: keyof FilterState, value: string) => {
     setFilters(prev => {
@@ -192,34 +193,31 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [activeTab]);
 
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const config = { headers: { 'X-API-Key': API_KEY } };
-
-      const [eventsRes, statsRes, ingestHealth, analyzerHealth] = await Promise.allSettled([
-        axios.get(`${API_BASE}/v1/events`, config),
-        axios.get(`${API_BASE}/v1/stats`, config),
-        axios.get(`${API_BASE}/health`),
-        axios.get(`http://localhost:8100/health`)
-      ]);
-      if (eventsRes.status === 'fulfilled') {
-        setEvents(Array.isArray(eventsRes.value.data.events) ? eventsRes.value.data.events : []);
-      }
-      if (statsRes.status === 'fulfilled') setStats(prev => statsRes.value.data || prev);
-      setHealth({
-        ingest: ingestHealth.status === 'fulfilled' && ingestHealth.value.status === 200,
-        analyzer: analyzerHealth.status === 'fulfilled' && analyzerHealth.value.status === 200
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
+  const fetchData = useCallback(() => refreshRef.current?.refresh(), []);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
+    const coordinator = createRefreshCoordinator(
+      signal => fetchDashboardSnapshot(
+        { apiBase: API_BASE, apiKey: API_KEY, analyzerHealthUrl: 'http://localhost:8100/health' },
+        signal,
+      ),
+      {
+        onLoading: setLoading,
+        onData: snapshot => {
+          if (snapshot.events) setEvents(snapshot.events);
+          if (snapshot.stats) setStats(snapshot.stats as Stats);
+          setHealth(snapshot.health);
+        },
+      },
+    );
+    refreshRef.current = coordinator;
+    coordinator.refresh();
+    const interval = setInterval(coordinator.refresh, 10000);
+    return () => {
+      clearInterval(interval);
+      coordinator.stop();
+      refreshRef.current = null;
+    };
   }, []);
 
   const filteredEvents = events.filter(ev => {
@@ -350,7 +348,7 @@ export default function App() {
             </button>
             <h1>{activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}</h1>
           </div>
-          <button className="refresh-btn" onClick={fetchData} disabled={loading} aria-label="Refresh data">
+          <button className="refresh-btn" onClick={fetchData} aria-busy={loading} aria-label="Refresh data">
             <RefreshCw size={18} className={loading ? 'spinning' : ''} />
           </button>
         </header>
