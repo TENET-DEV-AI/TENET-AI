@@ -205,14 +205,14 @@ export default function App() {
         onLoading: setLoading,
         onData: snapshot => {
           if (snapshot.events) setEvents(snapshot.events);
-          if (snapshot.stats) setStats(snapshot.stats as Stats);
+          if (snapshot.stats) setStats(snapshot.stats);
           setHealth(snapshot.health);
         },
       },
     );
     refreshRef.current = coordinator;
     coordinator.refresh();
-    const interval = setInterval(coordinator.refresh, 10000);
+    const interval = setInterval(coordinator.poll, 10000);
     return () => {
       clearInterval(interval);
       coordinator.stop();

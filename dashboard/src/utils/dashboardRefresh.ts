@@ -1,11 +1,11 @@
 import axios from 'axios';
-import type { SecurityEvent } from '../types/security';
+import type { SecurityEvent, Stats } from '../types/security';
 
 export interface DashboardSnapshot {
   /** undefined when the events request failed, so the caller keeps its previous value */
   events?: SecurityEvent[];
   /** undefined when the stats request failed or returned nothing */
-  stats?: unknown;
+  stats?: Stats;
   health: { ingest: boolean; analyzer: boolean };
 }
 
@@ -46,8 +46,9 @@ export interface RefreshHandlers {
 
 /**
  * Runs dashboard refreshes so that only the most recent one can touch state.
- * Starting a new refresh aborts the previous request; stop() aborts everything
- * (used on unmount). A superseded or stopped refresh never calls the handlers.
+ * A manual refresh() aborts the previous request; poll() is a scheduled tick that
+ * is skipped while a request is in flight, so a slow backend still gets to
+ * finish. stop() aborts everything (used on unmount). A superseded or stopped refresh never calls the handlers.
  */
 export function createRefreshCoordinator(
   load: (signal: AbortSignal) => Promise<DashboardSnapshot>,
@@ -55,12 +56,14 @@ export function createRefreshCoordinator(
 ) {
   let generation = 0;
   let controller: AbortController | null = null;
+  let inFlight = false;
 
   const refresh = async () => {
     controller?.abort();
     const current = ++generation;
     const own = new AbortController();
     controller = own;
+    inFlight = true;
     handlers.onLoading(true);
     try {
       const snapshot = await load(own.signal);
@@ -68,15 +71,24 @@ export function createRefreshCoordinator(
     } catch {
       /* aborted or unexpected failure: keep the previous data */
     } finally {
-      if (current === generation && !own.signal.aborted) handlers.onLoading(false);
+      if (current === generation && !own.signal.aborted) {
+        inFlight = false;
+        handlers.onLoading(false);
+      }
     }
+  };
+
+  const poll = () => {
+    if (inFlight) return Promise.resolve();
+    return refresh();
   };
 
   const stop = () => {
     generation++;
     controller?.abort();
     controller = null;
+    inFlight = false;
   };
 
-  return { refresh, stop };
+  return { refresh, poll, stop };
 }

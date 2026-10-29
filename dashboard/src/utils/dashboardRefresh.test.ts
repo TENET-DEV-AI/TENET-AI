@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
+import type { Stats } from '../types/security';
 import {
   createRefreshCoordinator,
   fetchDashboardSnapshot,
@@ -7,7 +8,7 @@ import {
 } from './dashboardRefresh';
 
 const health = { ingest: true, analyzer: true };
-const snap = (n: number): DashboardSnapshot => ({ events: [], stats: { n }, health });
+const snap = (n: number): DashboardSnapshot => ({ events: [], stats: { total_events: n } as Stats, health });
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -99,11 +100,26 @@ describe('createRefreshCoordinator', () => {
     beforeEach(() => { vi.useFakeTimers(); });
     afterEach(() => { vi.useRealTimers(); });
 
-    it('a slow poll is superseded by the next interval tick', async () => {
+    it('a poll tick during an in-flight request does not abort it and the response is applied', async () => {
       const t = setup();
-      const id = setInterval(t.refresh, 10000);
+      const id = setInterval(t.poll, 10000);
       t.refresh();
+      vi.advanceTimersByTime(30000);
+      expect(t.calls).toHaveLength(1);
+      expect(t.calls[0].signal.aborted).toBe(false);
+      t.calls[0].d.resolve(snap(1));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.onData).toHaveBeenCalledWith(snap(1));
+      expect(t.onLoading).toHaveBeenLastCalledWith(false);
       vi.advanceTimersByTime(10000);
+      expect(t.calls).toHaveLength(2);
+      clearInterval(id);
+    });
+
+    it('a manual refresh still supersedes an in-flight poll', async () => {
+      const t = setup();
+      t.poll();
+      t.refresh();
       expect(t.calls).toHaveLength(2);
       expect(t.calls[0].signal.aborted).toBe(true);
       t.calls[1].d.resolve(snap(2));
@@ -111,7 +127,16 @@ describe('createRefreshCoordinator', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(t.onData).toHaveBeenCalledTimes(1);
       expect(t.onData).toHaveBeenCalledWith(snap(2));
-      clearInterval(id);
+    });
+
+    it('stop() drops a late response and never applies it', async () => {
+      const t = setup();
+      t.poll();
+      t.stop();
+      expect(t.calls[0].signal.aborted).toBe(true);
+      t.calls[0].d.resolve(snap(1));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.onData).not.toHaveBeenCalled();
     });
   });
 });
