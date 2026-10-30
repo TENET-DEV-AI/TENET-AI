@@ -80,12 +80,12 @@ Your App → [TENET AI Plugin] → LLM API
 **1. Heuristic Detection (Rule-Based)**
 - Pattern matching for known attack signatures
 - Zero-shot, works immediately
-- Fast (<5ms latency)
+- Fast (design target: <5ms latency)
 
 **2. ML-Based Detection (Trained Models)**
 - Learns from adversarial prompt datasets
 - Adapts to new attack patterns
-- High accuracy (>90% on test set)
+- High accuracy (design target: >90% on the test set)
 
 **3. Behavioral Analysis**
 - Tracks user patterns over time
@@ -187,11 +187,11 @@ python scripts/train_model.py --test-only
 ```bash
 # Start with Docker Compose (recommended)
 # Brings up Redis, PostgreSQL, MinIO, ingest (8000) and analyzer (8100)
-docker-compose up -d
+docker compose up -d
 
-# Or run individually (requires a local Redis on port 6379)
-python services/ingest/app.py      # Port 8000
-python services/analyzer/app.py    # Port 8100
+# Or run individually from the repository root (requires a local Redis on port 6379)
+python -m services.ingest.app      # Port 8000
+python -m services.analyzer.app    # Port 8100
 ```
 
 ### Start the SOC Dashboard
@@ -199,12 +199,17 @@ python services/analyzer/app.py    # Port 8100
 ```bash
 cd dashboard
 npm install
-npm run dev    # Vite dev server, http://localhost:5173 by default
+# The dashboard sends this key to the ingest API; use the same value as API_KEY in your .env
+echo "VITE_API_KEY=tenet-dev-key-change-in-production" > .env.local
+# Port 3000 is one of the origins the ingest service allows (CORS_ORIGINS in docker-compose.yml)
+npm run dev -- --port 3000
 ```
 
 ### Run the Demo
 
 ```bash
+# Uses the default key tenet-dev-key-change-in-production; if you changed API_KEY in .env,
+# update the key in examples/llm_plugin_demo.py to match
 python examples/llm_plugin_demo.py
 ```
 
@@ -372,12 +377,12 @@ TENET-AI/
 
 **Current status: Phase 1 (Alpha / MVP) is complete** — ingest service, ML analyzer, prompt injection and jailbreak detection, React SOC dashboard, hardened dependency management and CI.
 
-| Phase | Timeline | Focus |
-|-------|----------|-------|
-| Enhancement & Stabilization | Q1 2026 | Expanded threat library, advanced heuristics, deeper dashboard analytics |
-| Intelligence & Integration | Q2 2026 | Ensemble detection (DistilBERT), cloud connectors (Bedrock, Azure OpenAI, Vertex AI), PostgreSQL audit trail |
-| Scaling & Community | Q3 2026 | Community threat feed, RBAC/SSO for the dashboard, multi-model detection |
-| Full Protection Ecosystem | Future | Output sanitization, self-learning loop, edge deployment |
+| Phase | Focus |
+|-------|-------|
+| Enhancement & Stabilization | Expanded threat library, advanced heuristics, deeper dashboard analytics |
+| Intelligence & Integration | Ensemble detection (DistilBERT), cloud connectors (Bedrock, Azure OpenAI, Vertex AI), PostgreSQL audit trail |
+| Scaling & Community | Community threat feed, RBAC/SSO for the dashboard, multi-model detection |
+| Full Protection Ecosystem | Output sanitization, self-learning loop, edge deployment |
 
 See [ROADMAP.md](ROADMAP.md) for the full, up-to-date checklist.
 
