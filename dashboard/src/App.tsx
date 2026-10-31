@@ -1,13 +1,16 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Shield, Activity, CheckCircle, XCircle, BarChart3,
-  RefreshCw, Search, Lock, Cpu, Menu, X, Save, Filter, Download
+  RefreshCw, Search, Cpu, Menu, X, Save, Filter, Download,
+  LogOut, Eye
 } from 'lucide-react';
 import axios from 'axios';
 import './index.css';
 import './App.css';
 
 import type { SecurityEvent, Stats, FilterState, ChartFilterAction, TimeRange } from './types/security';
+import { LoginView } from './components/LoginView';
+import { AlertDetailModal } from './components/AlertDetailModal';
 import { MOCK_EVENTS } from './data/mockEvents';
 import { DAYS_OF_WEEK, threatTypeLabel } from './constants/charts';
 import {
@@ -45,6 +48,7 @@ const EMPTY_FILTERS: FilterState = {
   search: '',
   verdict: '',
   status: '',
+  alertStatus: '',
   sourceIP: '',
   detectionType: '',
   threatType: '',
@@ -62,7 +66,7 @@ const PRESETS_KEY = 'tenet_filter_presets';
 function filtersToURL(f: FilterState): void {
   const params = new URLSearchParams();
   (Object.keys(f) as (keyof FilterState)[]).forEach(k => {
-    if (f[k]) params.set(k, f[k]);
+    if (f[k]) params.set(k, f[k]!);
   });
   const newURL = params.toString()
     ? `${window.location.pathname}?${params.toString()}`
@@ -76,6 +80,7 @@ function filtersFromURL(): FilterState {
     search: params.get('search') || '',
     verdict: params.get('verdict') || '',
     status: params.get('status') || '',
+    alertStatus: params.get('alertStatus') || '',
     sourceIP: params.get('sourceIP') || '',
     detectionType: params.get('detectionType') || '',
     threatType: params.get('threatType') || '',
@@ -102,9 +107,30 @@ const parseLocalDayEnd = (date: string) => {
 };
 
 export default function App() {
+  const [user, setUser] = useState<{ email: string; role: string; token: string } | null>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (import.meta.env.DEV && params.get('auth') === 'skip') {
+        return { email: 'analyst@tenet.ai', role: 'Senior SOC Responder', token: 'demo' };
+      }
+      const stored = localStorage.getItem('tenet_soc_user');
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  });
+
   const [activeTab, setActiveTab] = useState<'dashboard' | 'events' | 'system'>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [events, setEvents] = useState<SecurityEvent[]>(MOCK_EVENTS);
+  const [selectedAlertSnapshot, setSelectedAlertSnapshot] = useState<SecurityEvent | null>(null);
+  const selectedAlert = useMemo(
+    () => {
+      if (!selectedAlertSnapshot) return null;
+      return events.find(ev => ev.event_id === selectedAlertSnapshot.event_id) || selectedAlertSnapshot;
+    },
+    [events, selectedAlertSnapshot]
+  );
   const [stats, setStats] = useState<Stats>({
     total_events: 124,
     blocked_count: 12,
@@ -125,6 +151,63 @@ export default function App() {
   const [showFilters, setShowFilters] = useState(false);
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const searchRef = useRef<HTMLInputElement>(null);
+
+  const handleAcknowledge = useCallback((eventId: string) => {
+    const timestamp = new Date().toISOString();
+    setEvents(prev => prev.map(ev => {
+      if (ev.event_id === eventId) {
+        return {
+          ...ev,
+          alert_status: 'acknowledged',
+          acknowledged_at: timestamp
+        };
+      }
+      return ev;
+    }));
+    setSelectedAlertSnapshot(curr => (curr && curr.event_id === eventId ? {
+      ...curr,
+      alert_status: 'acknowledged',
+      acknowledged_at: timestamp
+    } : curr));
+  }, []);
+
+  const handleResolve = useCallback((eventId: string, note?: string) => {
+    const timestamp = new Date().toISOString();
+    const resolutionNote = note || 'Resolved by SOC Analyst';
+    setEvents(prev => prev.map(ev => {
+      if (ev.event_id === eventId) {
+        return {
+          ...ev,
+          alert_status: 'resolved',
+          resolved_at: timestamp,
+          resolution_note: resolutionNote
+        };
+      }
+      return ev;
+    }));
+    setSelectedAlertSnapshot(curr => (curr && curr.event_id === eventId ? {
+      ...curr,
+      alert_status: 'resolved',
+      resolved_at: timestamp,
+      resolution_note: resolutionNote
+    } : curr));
+  }, []);
+
+  const handleCloseAlert = useCallback(() => {
+    setSelectedAlertSnapshot(null);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    try {
+      localStorage.removeItem('tenet_soc_user');
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('auth')) {
+        url.searchParams.delete('auth');
+        window.history.replaceState({}, '', url.pathname + (url.search ? url.search : ''));
+      }
+    } catch { /* storage unavailable */ }
+    setUser(null);
+  }, []);
 
   const updateFilter = useCallback((key: keyof FilterState, value: string) => {
     setFilters(prev => {
@@ -204,7 +287,23 @@ export default function App() {
         axios.get(`http://localhost:8100/health`)
       ]);
       if (eventsRes.status === 'fulfilled') {
-        setEvents(Array.isArray(eventsRes.value.data.events) ? eventsRes.value.data.events : []);
+        const fetchedEvents = Array.isArray(eventsRes.value.data.events) ? eventsRes.value.data.events : [];
+        setEvents(prev => {
+          const prevMap = new Map(prev.map(e => [e.event_id, e]));
+          return fetchedEvents.map((fe: SecurityEvent) => {
+            const existing = prevMap.get(fe.event_id);
+            if (existing && existing.alert_status && !fe.alert_status) {
+              return {
+                ...fe,
+                alert_status: existing.alert_status,
+                acknowledged_at: existing.acknowledged_at,
+                resolved_at: existing.resolved_at,
+                resolution_note: existing.resolution_note,
+              };
+            }
+            return fe;
+          });
+        });
       }
       if (statsRes.status === 'fulfilled') setStats(prev => statsRes.value.data || prev);
       setHealth({
@@ -242,6 +341,10 @@ export default function App() {
       const resolved = withThreatType([ev])[0].resolvedThreatType;
       if (resolved !== filters.threatType) return false;
     }
+    if (filters.alertStatus) {
+      const currentAlertStatus = ev.alert_status || 'new';
+      if (currentAlertStatus !== filters.alertStatus) return false;
+    }
 
     const eventTs = parseEventTimestamp(ev.timestamp);
     if (!eventTs) return false;
@@ -270,6 +373,7 @@ export default function App() {
       search: `Search: ${value}`,
       verdict: `Severity: ${value}`,
       status: `Status: ${value}`,
+      alertStatus: `Alert: ${value}`,
       sourceIP: `Source: ${value}`,
       detectionType: `Type: ${value}`,
       threatType: `Threat: ${threatTypeLabel(value)}`,
@@ -288,15 +392,15 @@ export default function App() {
 
   const detectionTypes = [...new Set(events.map(e => e.source_type))];
   const handleFeedback = (
-  eventId: string,
-  type: "false_positive" | "false_negative"
-) => {
-  setFeedback(prev => ({
-    ...prev,
-    [eventId]: type
-  }));
+    eventId: string,
+    type: "false_positive" | "false_negative"
+  ) => {
+    setFeedback(prev => ({
+      ...prev,
+      [eventId]: type
+    }));
 
-};
+  };
 
   const handleExport = (format: ExportFormat) => {
     // same rows as the table, with the resolved threat type filled in
@@ -312,8 +416,21 @@ export default function App() {
 
   const threatTypes = [...new Set(withThreatType(events).map(e => e.resolvedThreatType))];
 
+  if (!user) {
+    return (
+      <LoginView
+        onLoginSuccess={(loggedUser) => {
+          try {
+            localStorage.setItem('tenet_soc_user', JSON.stringify(loggedUser));
+          } catch { /* storage unavailable */ }
+          setUser(loggedUser);
+        }}
+      />
+    );
+  }
+
   return (
-    <div className="app-container">
+    <div className="app-container" data-testid="soc-dashboard-app">
       {isSidebarOpen && <div className="sidebar-overlay" onClick={() => setIsSidebarOpen(false)} />}
 
       <aside className={`sidebar ${isSidebarOpen ? 'open' : ''}`}>
@@ -338,7 +455,19 @@ export default function App() {
           </button>
         </nav>
         <div className="user-info">
-          <Lock size={16} /> <span>Admin Mode</span>
+          <div className="user-details">
+            <span className="user-email" data-testid="user-email">{user.email}</span>
+            <span className="user-role-badge">{user.role}</span>
+          </div>
+          <button
+            className="logout-btn"
+            data-testid="logout-button"
+            onClick={handleLogout}
+            title="Sign Out"
+            aria-label="Sign Out"
+          >
+            <LogOut size={16} />
+          </button>
         </div>
       </aside>
 
@@ -447,6 +576,17 @@ export default function App() {
                     <option value="blocked">Blocked</option>
                     <option value="allowed">Allowed</option>
                   </select>
+                  <select
+                    value={filters.alertStatus || ''}
+                    onChange={e => updateFilter('alertStatus', e.target.value)}
+                    aria-label="Filter by alert status"
+                    data-testid="filter-alert-status-select"
+                  >
+                    <option value="">All Alert Statuses</option>
+                    <option value="new">New</option>
+                    <option value="acknowledged">Acknowledged</option>
+                    <option value="resolved">Resolved</option>
+                  </select>
                   <select value={filters.detectionType} onChange={e => updateFilter('detectionType', e.target.value)} aria-label="Filter by detection type">
                     <option value="">All Types</option>
                     {detectionTypes.map(t => <option key={t} value={t}>{t}</option>)}
@@ -491,8 +631,8 @@ export default function App() {
                         onKeyDown={e => e.key === 'Enter' && savePreset()}
                         autoFocus
                       />
-                        <button aria-label="Confirm preset name" onClick={savePreset}><CheckCircle size={14} /></button>
-                        <button aria-label="Cancel" onClick={() => setShowPresetInput(false)}><X size={14} /></button>
+                      <button aria-label="Confirm preset name" onClick={savePreset}><CheckCircle size={14} /></button>
+                      <button aria-label="Cancel" onClick={() => setShowPresetInput(false)}><X size={14} /></button>
                     </div>
                   ) : (
                     <button className="save-preset-btn" onClick={() => setShowPresetInput(true)}>
@@ -518,6 +658,7 @@ export default function App() {
               <table>
                 <thead>
                   <tr>
+                    <th>Alert Status</th>
                     <th>Verdict</th>
                     <th>Threat Type</th>
                     <th>Timestamp</th>
@@ -528,12 +669,23 @@ export default function App() {
                 </thead>
                 <tbody>
                   {filteredEvents.length === 0 ? (
-                    <tr><td colSpan={6} className="no-results">No events match the current filters.</td></tr>
+                    <tr><td colSpan={7} className="no-results">No events match the current filters.</td></tr>
                   ) : (
                     filteredEvents.map(event => {
                       const threat = withThreatType([event])[0].resolvedThreatType;
+                      const alertStatus = event.alert_status || 'new';
                       return (
-                        <tr key={event.event_id}>
+                        <tr key={event.event_id} data-testid={`alert-row-${event.event_id}`}>
+                          <td>
+                            <span
+                              className={`status-badge status-${alertStatus}`}
+                              data-testid={`status-badge-${event.event_id}`}
+                            >
+                              {alertStatus === 'new' && '● New'}
+                              {alertStatus === 'acknowledged' && '◐ Acknowledged'}
+                              {alertStatus === 'resolved' && '✔ Resolved'}
+                            </span>
+                          </td>
                           <td><span className={`verdict-badge ${event.verdict}`}>{event.verdict}</span></td>
                           <td><span className="threat-type-badge">{threatTypeLabel(threat)}</span></td>
                           <td>{new Date(event.timestamp).toLocaleString()}</td>
@@ -542,50 +694,65 @@ export default function App() {
                             "{event.prompt ? (event.prompt.length > 60 ? `${event.prompt.substring(0, 60)}...` : event.prompt) : 'N/A'}"
                           </td>
                           <td>
-  <div
-  style={{
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-  }}
->
-    <span>{event.blocked ? "🚫 Blocked" : "✅ Allowed"}</span>
-    {feedback[event.event_id] && (
-  <span style={{ color: "`#22c55e`", fontSize: "12px" }}>
-    ✓ Marked as {feedback[event.event_id] === "false_positive" ? "False Positive" : "False Negative"}
-  </span>
-)}
-
-   <button
-  style={{
-    padding: "8px",
-    borderRadius: "6px",
-    cursor: "pointer",
-    backgroundColor: "#2563eb",
-    color: "white",
-    border: "none",
-    fontWeight: "bold"
-  }}
-  onClick={() => handleFeedback(event.event_id, "false_positive")}
->
-  Mark as False Positive
-</button>
-<button
-  style={{
-    padding: "8px",
-    borderRadius: "6px",
-    cursor: "pointer",
-    backgroundColor: "#dc2626",
-    color: "white",
-    border: "none",
-    fontWeight: "bold"
-  }}
-  onClick={() => handleFeedback(event.event_id, "false_negative")}
->
-  Mark as False Negative
-</button>
-  </div>
-</td>
+                            <div className="alert-actions-cell">
+                              <div className="alert-action-btns-row">
+                                <button
+                                  type="button"
+                                  className="view-alert-btn"
+                                  data-testid={`view-alert-btn-${event.event_id}`}
+                                  onClick={() => setSelectedAlertSnapshot(event)}
+                                >
+                                  <Eye size={13} /> View
+                                </button>
+                                {alertStatus === 'new' && (
+                                  <button
+                                    type="button"
+                                    className="ack-alert-btn"
+                                    data-testid={`ack-alert-btn-${event.event_id}`}
+                                    onClick={() => handleAcknowledge(event.event_id)}
+                                  >
+                                    Acknowledge
+                                  </button>
+                                )}
+                                {alertStatus !== 'resolved' && (
+                                  <button
+                                    type="button"
+                                    className="resolve-alert-btn"
+                                    data-testid={`resolve-alert-btn-${event.event_id}`}
+                                    onClick={() => handleResolve(event.event_id)}
+                                  >
+                                    Resolve
+                                  </button>
+                                )}
+                              </div>
+                              <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>
+                                {event.blocked ? "🚫 Blocked" : "✅ Allowed"}
+                              </span>
+                              {feedback[event.event_id] && (
+                                <span style={{ color: "#22c55e", fontSize: "11px" }}>
+                                  ✓ Marked as {feedback[event.event_id] === "false_positive" ? "False Positive" : "False Negative"}
+                                </span>
+                              )}
+                              <div className="feedback-row">
+                                <button
+                                  type="button"
+                                  className="btn-feedback-fp"
+                                  onClick={() => handleFeedback(event.event_id, "false_positive")}
+                                  data-testid={`feedback-fp-${event.event_id}`}
+                                >
+                                  False +
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-feedback-fn"
+                                  onClick={() => handleFeedback(event.event_id, "false_negative")}
+                                  data-testid={`feedback-fn-${event.event_id}`}
+                                >
+                                  False -
+                                </button>
+                              </div>
+                            </div>
+                          </td>
                         </tr>
                       );
                     })
@@ -621,6 +788,15 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {selectedAlert && (
+        <AlertDetailModal
+          event={selectedAlert}
+          onClose={handleCloseAlert}
+          onAcknowledge={handleAcknowledge}
+          onResolve={handleResolve}
+        />
+      )}
     </div>
   );
 }
