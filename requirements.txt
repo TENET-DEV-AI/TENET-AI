@@ -7,6 +7,7 @@ uvicorn[standard]>=0.51.0
 starlette>=1.6.0  # CVE-2024-47874 fix
 pydantic>=2.13.4
 pydantic-settings>=2.14.1
+pyyaml>=6.0.2
 
 # Template Engine (with security fixes)
 jinja2>=3.1.6  # CVE-2024-56326, CVE-2025-27516 fixes
