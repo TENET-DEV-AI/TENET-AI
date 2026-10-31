@@ -20,6 +20,7 @@ export const MOCK_EVENTS: SecurityEvent[] = [
     risk_score: 0.65,
     blocked: false,
     threat_type: 'prompt_injection',
+    alert_status: 'new',
   },
   {
     event_id: '9ce1cd17-cf77-4e0a-ba90-8480e9794712',
@@ -32,6 +33,8 @@ export const MOCK_EVENTS: SecurityEvent[] = [
     risk_score: 0.98,
     blocked: true,
     threat_type: 'jailbreak',
+    alert_status: 'acknowledged',
+    acknowledged_at: hoursAgo(2),
   },
   {
     event_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
@@ -44,6 +47,8 @@ export const MOCK_EVENTS: SecurityEvent[] = [
     risk_score: 0.95,
     blocked: true,
     threat_type: 'data_extraction',
+    alert_status: 'resolved',
+    resolved_at: hoursAgo(4, 1),
   },
   {
     event_id: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
