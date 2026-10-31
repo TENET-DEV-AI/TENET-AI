@@ -19,7 +19,7 @@ h11>=0.16.0  # CVE-2025-43859 fix
 scikit-learn>=1.9.0
 numpy>=2.5.0
 pandas>=3.0.5
-joblib>=1.5.3
+joblib>=1.6.0
 
 # Data Processing
 python-multipart>=0.0.32

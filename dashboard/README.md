@@ -71,3 +71,12 @@ export default defineConfig([
   },
 ])
 ```
+
+## End-to-End Testing
+
+End-to-End tests are implemented using Playwright. For full instructions on running tests locally and in CI, see the [E2E Testing Guide](../docs/E2E_TESTING.md).
+
+```bash
+# Run all E2E tests from root
+npm run test:e2e
+```
