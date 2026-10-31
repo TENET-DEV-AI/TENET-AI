@@ -200,6 +200,7 @@ python -m services.analyzer.app    # Port 8100
 cd dashboard
 npm install
 # The dashboard sends this key to the ingest API; use the same value as API_KEY in your .env
+# Vite inlines VITE_* values into the browser bundle: this key is public to anyone who loads the dev dashboard. Never deploy it this way.
 echo "VITE_API_KEY=tenet-dev-key-change-in-production" > .env.local
 # Port 3000 is one of the origins the ingest service allows (CORS_ORIGINS in docker-compose.yml)
 npm run dev -- --port 3000
