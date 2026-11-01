@@ -407,7 +407,7 @@ async def ingest_llm_event(request: LLMEventRequest, x_api_key: Optional[str] = 
         "verdict": verdict,
     }
 
-    degraded = False
+    queued = False
     if not blocked:
         queued = await redis_call(redis_client.lpush("tenet:events:queue", json.dumps(event_payload))) if redis_client else None
         stored = await redis_call(redis_client.set(f"tenet:event:{event_id}", json.dumps(event_payload), ex=86400)) if redis_client else None
@@ -429,7 +429,13 @@ async def ingest_llm_event(request: LLMEventRequest, x_api_key: Optional[str] = 
         blocked=blocked,
         risk_score=risk_score,
         verdict=verdict,
-        message="Blocked - malicious pattern detected" if blocked else "Event queued for analysis",
+        message=(
+            "Blocked - Malicious pattern detected"
+            if blocked
+            else "Event queued for analysis"
+            if queued
+            else "Event not queued; persistence is degraded"
+        ),        
         degraded=degraded,
     )
 
