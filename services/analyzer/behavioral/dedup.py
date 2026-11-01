@@ -74,8 +74,8 @@ class AlertDeduplicator:
 
         async with self._lock:
             now = time.monotonic()
-            last_emitted = self._memory_dedup.get(key, 0.0)
-            if now - last_emitted < self.config.alert_cooldown_seconds:
+            last_emitted = self._memory_dedup.get(key)
+            if last_emitted is not None and (now - last_emitted) < self.config.alert_cooldown_seconds:
                 return True
 
             self._memory_dedup[key] = now

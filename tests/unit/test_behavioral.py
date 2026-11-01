@@ -1500,3 +1500,31 @@ class TestReviewFindingsRegression:
 
         # The old key should have been purged during cleanup
         assert "old-key" not in dedup._memory_dedup
+
+    @pytest.mark.asyncio
+    async def test_dedup_low_uptime_fresh_vm_not_suppressed(self, monkeypatch):
+        """On a freshly booted runner VM where time.monotonic() < cooldown, new alerts are not suppressed."""
+        monkeypatch.setattr(time, "monotonic", lambda: 5.0)
+
+        config = BehavioralConfig(alert_cooldown_seconds=300)
+        dedup = AlertDeduplicator(config=config)
+
+        alert = BehavioralAlert(
+            alert_id="a-low-uptime",
+            org_id="org-vm",
+            source_id="src-vm",
+            detector_type="multi_turn_probing",
+            threat_type="behavioral_multi_turn",
+            severity="high",
+            verdict="malicious",
+            risk_score=0.85,
+            detection_reason="Probing attempts detected",
+            time_window_seconds=300,
+            contributing_events=[],
+        )
+
+        # First alert must NOT be duplicate even though uptime (5.0s) is far below cooldown (300s)
+        assert await dedup.is_duplicate(alert) is False
+
+        # Immediate follow-up is a duplicate
+        assert await dedup.is_duplicate(alert) is True
