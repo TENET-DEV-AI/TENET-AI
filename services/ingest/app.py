@@ -407,6 +407,7 @@ async def ingest_llm_event(request: LLMEventRequest, x_api_key: Optional[str] = 
         "verdict": verdict,
     }
 
+    degraded = False
     queued = False
     if not blocked:
         queued = await redis_call(redis_client.lpush("tenet:events:queue", json.dumps(event_payload))) if redis_client else None
