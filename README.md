@@ -497,6 +497,5 @@ TENET AI maintains comprehensive automated unit test coverage across all core se
 - **Utilities & Plugin Client**: 100% coverage
 
 To run unit tests and generate the coverage report locally:
-`ash
+```bash
 pytest --cov=services --cov=tenet_plugin --cov-report=term-missing tests/unit/
-`
