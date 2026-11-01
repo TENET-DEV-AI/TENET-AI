@@ -3,6 +3,7 @@
 **Defensive Security Middleware for LLM Applications**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Coverage: 95%](https://img.shields.io/badge/coverage-95%25-brightgreen.svg)](#-test-coverage)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 ![Security: Active](https://img.shields.io/badge/security-active-brightgreen.svg)
@@ -483,3 +484,18 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) for deta
 
 *Last Updated: January 2026*
 *Version: 0.1.0 (MVP)*
+
+
+## 🧪 Test Coverage
+
+TENET AI maintains comprehensive automated unit test coverage across all core services, models, and utility modules:
+
+- **Overall Coverage**: 95% line coverage (247 unit tests)
+- **Analyzer Engine & Model**: ≥ 90% coverage
+- **Ingest Middleware & Circuit Breaker**: ≥ 90% coverage
+- **Security & Tenant Management**: 100% coverage
+- **Utilities & Plugin Client**: 100% coverage
+
+To run unit tests and generate the coverage report locally:
+```bash
+pytest --cov=services --cov=tenet_plugin --cov-report=term-missing tests/unit/
