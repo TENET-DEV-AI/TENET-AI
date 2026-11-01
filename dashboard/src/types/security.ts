@@ -12,6 +12,19 @@ export interface SecurityEvent {
   risk_score: number;
   blocked: boolean;
   threat_type?: string;
+  org_id?: string;
+  metadata?: {
+    is_behavioral_alert?: boolean;
+    detector_type?: string;
+    detection_reason?: string;
+    severity?: string;
+    time_window_seconds?: number;
+    contributing_events?: string[];
+    shared_pattern?: string;
+    participating_sources?: string[];
+    [key: string]: any;
+  };
+  analysis_details?: Record<string, any>;
   alert_status?: AlertWorkflowStatus;
   acknowledged_at?: string;
   resolved_at?: string;

@@ -6,6 +6,7 @@ import os
 import json
 import asyncio
 import sys
+import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Optional
 from pathlib import Path
@@ -26,7 +27,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from services.utils.logging_config import setup_logging
 from services.security import SecurityManager
 from services.utils.metrics import PrometheusMiddleware, increment_detection
-from services.utils.env_validator import non_negative_float, port, probability, validate_env_vars
+from services.utils.env_validator import (
+    boolean,
+    non_negative_float,
+    port,
+    positive_int,
+    probability,
+    validate_env_vars,
+)
+from services.analyzer.behavioral import BehavioralConfig, BehavioralEngine
 from prometheus_client import make_asgi_app
 logger = setup_logging(__name__)
 
@@ -41,12 +50,42 @@ _ENV_DEFAULTS = {
     "MODEL_PATH": "./models/trained",
     "PROMPT_INJECTION_THRESHOLD": 0.75,
     "SHUTDOWN_TIMEOUT": 10.0,
+    "BEHAVIORAL_ENABLED": True,
+    "BEHAVIORAL_WINDOW_SECONDS": 900,
+    "BEHAVIORAL_RETENTION_SECONDS": 86400,
+    "BEHAVIORAL_PROBING_THRESHOLD": 0.50,
+    "BEHAVIORAL_PROBING_MIN_ATTEMPTS": 3,
+    "BEHAVIORAL_SPIKE_MIN_BASELINE_SAMPLES": 3,
+    "BEHAVIORAL_SPIKE_DELTA_THRESHOLD": 0.40,
+    "BEHAVIORAL_SPIKE_MIN_RISK": 0.70,
+    "BEHAVIORAL_COORDINATED_MIN_SOURCES": 3,
+    "BEHAVIORAL_COORDINATED_WINDOW_SECONDS": 300,
+    "BEHAVIORAL_NOVELTY_MIN_BASELINE_SAMPLES": 3,
+    "BEHAVIORAL_NOVELTY_MIN_RISK": 0.60,
+    "BEHAVIORAL_ALERT_COOLDOWN_SECONDS": 300,
+    "BEHAVIORAL_MAX_EVENTS_PER_PROFILE": 100,
+    "BEHAVIORAL_MAX_COORDINATED_EVENTS": 500,
 }
 _ENV_TYPES = {
     "REDIS_PORT": port,
     "API_PORT": port,
     "PROMPT_INJECTION_THRESHOLD": probability,
     "SHUTDOWN_TIMEOUT": non_negative_float,
+    "BEHAVIORAL_ENABLED": boolean,
+    "BEHAVIORAL_WINDOW_SECONDS": positive_int,
+    "BEHAVIORAL_RETENTION_SECONDS": positive_int,
+    "BEHAVIORAL_PROBING_THRESHOLD": probability,
+    "BEHAVIORAL_PROBING_MIN_ATTEMPTS": positive_int,
+    "BEHAVIORAL_SPIKE_MIN_BASELINE_SAMPLES": positive_int,
+    "BEHAVIORAL_SPIKE_DELTA_THRESHOLD": probability,
+    "BEHAVIORAL_SPIKE_MIN_RISK": probability,
+    "BEHAVIORAL_COORDINATED_MIN_SOURCES": positive_int,
+    "BEHAVIORAL_COORDINATED_WINDOW_SECONDS": positive_int,
+    "BEHAVIORAL_NOVELTY_MIN_BASELINE_SAMPLES": positive_int,
+    "BEHAVIORAL_NOVELTY_MIN_RISK": probability,
+    "BEHAVIORAL_ALERT_COOLDOWN_SECONDS": positive_int,
+    "BEHAVIORAL_MAX_EVENTS_PER_PROFILE": positive_int,
+    "BEHAVIORAL_MAX_COORDINATED_EVENTS": positive_int,
 }
 
 REDIS_HOST = _ENV_DEFAULTS["REDIS_HOST"]
@@ -56,6 +95,7 @@ API_PORT = _ENV_DEFAULTS["API_PORT"]
 MODEL_PATH = _ENV_DEFAULTS["MODEL_PATH"]
 PROMPT_INJECTION_THRESHOLD = _ENV_DEFAULTS["PROMPT_INJECTION_THRESHOLD"]
 SHUTDOWN_TIMEOUT = _ENV_DEFAULTS["SHUTDOWN_TIMEOUT"]
+behavioral_config = BehavioralConfig()
 
 
 def load_config() -> None:
@@ -65,7 +105,7 @@ def load_config() -> None:
         EnvValidationError: If any value is invalid. Lists every bad variable.
     """
     global REDIS_HOST, REDIS_PORT, API_HOST, API_PORT, MODEL_PATH
-    global PROMPT_INJECTION_THRESHOLD, SHUTDOWN_TIMEOUT
+    global PROMPT_INJECTION_THRESHOLD, SHUTDOWN_TIMEOUT, behavioral_config
 
     config = validate_env_vars([], optional_vars=_ENV_DEFAULTS, types=_ENV_TYPES)
 
@@ -76,6 +116,27 @@ def load_config() -> None:
     MODEL_PATH = config["MODEL_PATH"]
     PROMPT_INJECTION_THRESHOLD = config["PROMPT_INJECTION_THRESHOLD"]
     SHUTDOWN_TIMEOUT = config["SHUTDOWN_TIMEOUT"]
+
+    behavioral_config = BehavioralConfig(
+        enabled=config["BEHAVIORAL_ENABLED"],
+        window_seconds=config["BEHAVIORAL_WINDOW_SECONDS"],
+        retention_seconds=config["BEHAVIORAL_RETENTION_SECONDS"],
+        probing_threshold=config["BEHAVIORAL_PROBING_THRESHOLD"],
+        probing_min_attempts=config["BEHAVIORAL_PROBING_MIN_ATTEMPTS"],
+        spike_min_baseline_samples=config["BEHAVIORAL_SPIKE_MIN_BASELINE_SAMPLES"],
+        spike_delta_threshold=config["BEHAVIORAL_SPIKE_DELTA_THRESHOLD"],
+        spike_min_risk=config["BEHAVIORAL_SPIKE_MIN_RISK"],
+        coordinated_min_sources=config["BEHAVIORAL_COORDINATED_MIN_SOURCES"],
+        coordinated_window_seconds=config["BEHAVIORAL_COORDINATED_WINDOW_SECONDS"],
+        novelty_min_baseline_samples=config["BEHAVIORAL_NOVELTY_MIN_BASELINE_SAMPLES"],
+        novelty_min_risk=config["BEHAVIORAL_NOVELTY_MIN_RISK"],
+        alert_cooldown_seconds=config["BEHAVIORAL_ALERT_COOLDOWN_SECONDS"],
+        max_events_per_profile=config["BEHAVIORAL_MAX_EVENTS_PER_PROFILE"],
+        max_coordinated_events=config["BEHAVIORAL_MAX_COORDINATED_EVENTS"],
+    )
+    if behavioral_engine:
+        behavioral_engine.config = behavioral_config
+
 
 # FastAPI app
 app = FastAPI(
@@ -113,6 +174,7 @@ ml_model = None
 vectorizer = None
 stop_event: Optional[asyncio.Event] = None
 background_task = None
+behavioral_engine: BehavioralEngine | None = None
 security = SecurityManager(
     service_name="analyzer",
     redis_call=lambda coro: coro,
@@ -129,6 +191,8 @@ class AnalysisRequest(BaseModel):
     """Request for prompt analysis."""
     prompt: str = Field(..., description="The prompt to analyze", min_length=1, max_length=10000)
     context: Optional[str] = Field(None, description="Additional context", max_length=5000)
+    source_id: str | None = Field(None, description="Optional source identifier for behavioral tracking", max_length=128)
+    org_id: str | None = Field(None, description="Optional tenant identifier", max_length=64)
 
 
 class AnalysisResponse(BaseModel):
@@ -216,6 +280,12 @@ async def startup():
     # Load ML models
     load_ml_models()
 
+    # Initialize behavioral engine
+    global behavioral_engine
+    behavioral_engine = BehavioralEngine(
+        config=behavioral_config,
+        redis_client_getter=lambda: redis_client,
+    )
     
     # Create stop event and start background processor
     stop_event = asyncio.Event()
@@ -393,6 +463,50 @@ async def analyze_prompt(
     prompt = request.prompt
     result = run_analysis(prompt)
     
+    # Optional behavioral tracking for direct API calls with source_id
+    if request.source_id and behavioral_engine:
+        if request.org_id and request.org_id != auth.org_id and auth.role != "admin":
+            raise HTTPException(status_code=403, detail="Insufficient permissions to analyze for other tenants")
+        effective_org = request.org_id if (request.org_id and auth.role == "admin") else auth.org_id
+        direct_event = {
+            "event_id": f"api-{uuid.uuid4().hex[:12]}",
+            "org_id": effective_org,
+            "source_id": request.source_id,
+            "model": "api-direct",
+            "prompt": prompt,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "risk_score": result.risk_score,
+            "verdict": result.verdict,
+            "threat_type": result.threat_type,
+        }
+        if redis_client:
+            try:
+                await redis_client.set(
+                    f"tenet:events:{direct_event['event_id']}",
+                    json.dumps(direct_event),
+                    ex=86400,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to persist direct event to Redis for %s: %s", direct_event["event_id"], exc)
+
+        try:
+            alerts = await behavioral_engine.process_event(
+                direct_event,
+                result,
+            )
+            if alerts:
+                has_read = auth.has_permission("read")
+                sanitized_alerts = []
+                for a in alerts:
+                    ad = a.to_event_dict()
+                    if not has_read:
+                        # Sanitize cross-source intelligence when caller lacks read permission
+                        ad["metadata"].pop("participating_sources", None)
+                    sanitized_alerts.append(ad)
+                result.details["behavioral_alerts"] = sanitized_alerts
+        except Exception:
+            logger.exception("Behavioral check failed in analyze_prompt")
+
     increment_detection(service="analyzer", threat_type=result.threat_type, verdict=result.verdict)
     
     security.audit(
@@ -402,6 +516,40 @@ async def analyze_prompt(
         metadata={"risk_score": result.risk_score, "threat_type": result.threat_type},
     )
     return result
+
+
+@app.get(
+    "/v1/behavioral/profile/{source_id}",
+    tags=["Behavioral Analysis"],
+    summary="Get Source Behavioral Profile",
+    description="Retrieves the rolling behavioral profile and metrics for a given source identifier.",
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
+        403: {"model": ErrorResponse, "description": "Insufficient permissions"},
+        503: {"model": ErrorResponse, "description": "Behavioral engine unavailable"},
+    },
+    dependencies=[Security(api_key_scheme)],
+)
+async def get_source_behavioral_profile(
+    source_id: str,
+    x_api_key: Annotated[str, Header(...)],
+    org_id: str | None = None,
+):
+    """Retrieve rolling behavioral profile and anomaly metrics for a source."""
+    if not source_id.strip():
+        raise HTTPException(status_code=422, detail="source_id must not be empty")
+    if len(source_id) > 128:
+        raise HTTPException(status_code=422, detail="source_id must not exceed 128 characters")
+
+    auth = await security.require_auth(x_api_key, required_permission="read")
+    if org_id and org_id != auth.org_id and auth.role != "admin":
+        raise HTTPException(status_code=403, detail="Insufficient permissions to access profiles of other tenants")
+
+    effective_org = org_id if (org_id and auth.role == "admin") else auth.org_id
+    if not behavioral_engine:
+        raise HTTPException(status_code=503, detail="Behavioral engine is unavailable")
+    profile = await behavioral_engine.get_profile(effective_org, source_id)
+    return profile.to_dict()
 
 
 def run_analysis(prompt: str) -> AnalysisResponse:
@@ -800,6 +948,13 @@ async def _process_single_event(event_json: str):
     
     # Update and store event
     await _update_and_store_event(event, event_id, result)
+
+    # Process event through behavioral anomaly engine
+    if behavioral_engine:
+        try:
+            await behavioral_engine.process_event(event, result)
+        except Exception:
+            logger.exception("Behavioral analysis failed for event %s", event_id)
 
 
 async def process_event_queue():

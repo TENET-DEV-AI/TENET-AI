@@ -22,6 +22,10 @@ export const THREAT_TYPE_LABELS: Record<string, string> = {
   data_extraction: 'Data Extraction',
   phishing: 'Phishing',
   role_manipulation: 'Role Manipulation',
+  behavioral_multi_turn: 'Multi-Turn Probing',
+  behavioral_risk_spike: 'Risk Spike',
+  behavioral_coordinated: 'Coordinated Attack',
+  behavioral_novelty: 'Novelty Anomaly',
   benign: 'Benign',
   unknown: 'Unknown',
 };

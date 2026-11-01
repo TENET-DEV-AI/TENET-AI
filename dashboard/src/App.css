@@ -860,6 +860,183 @@ table th:last-child {
   cursor: not-allowed;
 }
 
+/* Behavioral Anomaly Engine Styles */
+.behavioral-row {
+  background: rgba(147, 51, 234, 0.04);
+}
+
+.behavioral-row:hover {
+  background: rgba(147, 51, 234, 0.08) !important;
+}
+
+.behavioral-tag {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #7e22ce;
+  color: #ffffff;
+  margin-left: 6px;
+}
+
+.source-cell-container {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tenant-tag {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  font-family: monospace;
+}
+
+.inspect-details-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 0.75rem;
+  color: #38bdf8;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.15s ease;
+}
+
+.inspect-details-btn:hover {
+  color: #7dd3fc;
+  text-decoration: underline;
+}
+
+.expanded-details-row td {
+  padding: 0 !important;
+  background: #0f172a;
+}
+
+.behavioral-detail-card {
+  padding: 16px 24px;
+  border-left: 4px solid #a855f7;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: rgba(15, 23, 42, 0.75);
+}
+
+.behavioral-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.detail-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #c084fc;
+}
+
+.severity-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  text-transform: uppercase;
+}
+
+.severity-badge.critical {
+  background: #7f1d1d;
+  color: #fca5a5;
+  border: 1px solid #dc2626;
+}
+
+.severity-badge.high {
+  background: #7c2d12;
+  color: #fdba74;
+  border: 1px solid #ea580c;
+}
+
+.severity-badge.medium {
+  background: #713f12;
+  color: #fde047;
+  border: 1px solid #ca8a04;
+}
+
+.behavioral-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px 16px;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+}
+
+.behavioral-reason-box {
+  background: rgba(255, 255, 255, 0.04);
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.participating-sources-box,
+.contributing-events-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+.chip-list,
+.contributing-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.source-pill {
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: #1e293b;
+  color: #38bdf8;
+  border: 1px solid #334155;
+  font-family: monospace;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.source-pill:hover,
+.source-pill:focus-visible {
+  background: #334155;
+  outline: 2px solid #38bdf8;
+}
+
+.contributing-event-chip {
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: #1e1b4b;
+  color: #a5b4fc;
+  border: 1px solid #3730a3;
+  font-family: monospace;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.contributing-event-chip:hover,
+.contributing-event-chip:focus-visible {
+  background: #312e81;
+  color: #ffffff;
+  border-color: #6366f1;
+  outline: 2px solid #6366f1;
+}
+
+
 /* =========================================================
    SOC Login Screen Styles
    ========================================================= */
