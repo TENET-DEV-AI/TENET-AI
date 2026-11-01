@@ -195,7 +195,11 @@ Request Body:
 | BEHAVIORAL_SPIKE_MIN_RISK             | 0.70              | Minimum risk required for spike alert          |
 | BEHAVIORAL_COORDINATED_MIN_SOURCES    | 3                 | Minimum distinct sources for coordinated alert |
 | BEHAVIORAL_COORDINATED_WINDOW_SECONDS | 300               | Coordinated burst time window (5 minutes)      |
+| BEHAVIORAL_NOVELTY_MIN_BASELINE_SAMPLES| 3                 | Minimum baseline samples before flagging novelty|
+| BEHAVIORAL_NOVELTY_MIN_RISK           | 0.60              | Minimum risk score for a novel attack type     |
 | BEHAVIORAL_ALERT_COOLDOWN_SECONDS     | 300               | Cooldown to prevent duplicate incident alerts  |
+| BEHAVIORAL_MAX_EVENTS_PER_PROFILE     | 100               | Maximum rolling events stored per profile      |
+| BEHAVIORAL_MAX_COORDINATED_EVENTS     | 500               | Maximum sliding window events for coordination |
 
 ---
 
@@ -270,7 +274,7 @@ The Behavioral Analysis Engine evaluates multi-turn interactions and cross-sourc
 * **Deduplication Cooldown**: Ongoing incidents are tracked via cooldown fingerprints (`BEHAVIORAL_ALERT_COOLDOWN_SECONDS`) to eliminate alert storms.
 * **Contributing Event Linkage**: Every behavioral alert explicitly references all contributing `event_id`s in its `metadata.contributing_events` field, enabling SOC analysts to inspect the exact historical prompts that led to the verdict.
 * **Storage & Queueing**: Behavioral alerts are stored at `tenet:event:{alert_id}` with TTL retention and pushed to `tenet:alerts` for immediate SOC dashboard visibility.
-* **Distributed Deployment & Reliability**: In multi-process production deployments, cross-process profile synchronization and coordinated attack detection utilize Redis (`tenet:behavioral:*`). When operating in offline or degraded mode without Redis, anomaly tracking degrades gracefully to process-local memory (cross-process coordination requires Redis).
+* **Distributed Deployment & Reliability**: In multi-process production deployments, cross-process profile synchronization and coordinated attack detection utilize atomic Redis Lua scripts (`tenet:behavioral:*`) with URL-encoded namespaces to guarantee race-free concurrency and strict tenant isolation. When operating in degraded mode without Redis, anomaly tracking uses a bounded process-local LRU store (capped at 1,000 profiles) that automatically evicts profiles exceeding `BEHAVIORAL_RETENTION_SECONDS` and reconciles dirty state into Redis upon reconnection. Cross-process attack correlation requires Redis.
 
 ### Source Profile Endpoint
 

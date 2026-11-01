@@ -105,7 +105,7 @@ class RiskSpikeDetector(BaseBehavioralDetector):
             current_event.risk_score >= self.config.spike_min_risk
             and delta >= self.config.spike_delta_threshold
         ):
-            contributing = [current_event.event_id] + [e.event_id for e in prior_events[-5:]]
+            contributing = [current_event.event_id] + [e.event_id for e in prior_events]
             return BehavioralAlert(
                 alert_id=f"alert-spike-{uuid.uuid4().hex[:12]}",
                 org_id=profile.org_id,
@@ -179,7 +179,8 @@ class CoordinatedAttackDetector(BaseBehavioralDetector):
             if len(distinct_sources) >= self.config.coordinated_min_sources:
                 contributing = list({ev["event_id"] for ev in events_in_group if ev.get("event_id")})
                 avg_risk = sum(float(ev.get("risk_score", 0.0)) for ev in events_in_group) / len(events_in_group)
-                alert_risk = max(0.90, round(avg_risk, 3))
+                alert_risk = round(avg_risk, 3)
+                severity = "critical" if alert_risk >= 0.85 else "high"
 
                 return BehavioralAlert(
                     alert_id=f"alert-coord-{uuid.uuid4().hex[:12]}",
@@ -187,7 +188,7 @@ class CoordinatedAttackDetector(BaseBehavioralDetector):
                     source_id=f"coordinated-{len(distinct_sources)}-sources",
                     detector_type="coordinated_attack",
                     threat_type="behavioral_coordinated",
-                    severity="critical",
+                    severity=severity,
                     verdict="malicious",
                     risk_score=alert_risk,
                     detection_reason=(
@@ -256,7 +257,7 @@ class NoveltyDetector(BaseBehavioralDetector):
                 f"with {len(prior_events)} previously benign interactions (baseline risk {baseline_risk:.2f})"
             ),
             time_window_seconds=self.config.window_seconds,
-            contributing_events=[current_event.event_id],
+            contributing_events=[current_event.event_id] + [e.event_id for e in prior_events],
             metadata={
                 "novel_threat_type": current_event.threat_type,
                 "prior_benign_count": len(prior_events),

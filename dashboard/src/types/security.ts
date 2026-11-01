@@ -1,4 +1,5 @@
 export type Verdict = 'benign' | 'suspicious' | 'malicious';
+export type AlertWorkflowStatus = 'new' | 'acknowledged' | 'resolved';
 
 export interface SecurityEvent {
   event_id: string;
@@ -24,6 +25,10 @@ export interface SecurityEvent {
     [key: string]: any;
   };
   analysis_details?: Record<string, any>;
+  alert_status?: AlertWorkflowStatus;
+  acknowledged_at?: string;
+  resolved_at?: string;
+  resolution_note?: string;
 }
 
 export interface Stats {
@@ -36,6 +41,7 @@ export interface FilterState {
   search: string;
   verdict: string;
   status: string;
+  alertStatus?: string;
   sourceIP: string;
   detectionType: string;
   threatType: string;

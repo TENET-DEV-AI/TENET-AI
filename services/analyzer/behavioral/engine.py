@@ -94,7 +94,9 @@ class BehavioralEngine:
             try:
                 # Handle ISO string (Python 3.11+ supports 'Z' natively)
                 dt = datetime.fromisoformat(ts_raw)
-                return dt.timestamp(), ts_raw
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                return dt.timestamp(), dt.isoformat()
             except (ValueError, TypeError) as exc:
                 logger.debug("Failed to parse ISO timestamp '%s': %s", ts_raw, exc)
 
@@ -169,8 +171,12 @@ class BehavioralEngine:
                     continue
 
                 # 5. Persist and broadcast the alert
-                await self._emit_alert(alert)
-                emitted_alerts.append(alert)
+                try:
+                    await self._emit_alert(alert)
+                    emitted_alerts.append(alert)
+                except Exception:
+                    logger.exception("Failed to emit behavioral alert %s; clearing dedup reservation", alert.alert_id)
+                    await self.dedup.clear_alert(alert)
 
             except Exception:
                 logger.exception("Error evaluating detector %s for event %s", detector.__class__.__name__, event_id)

@@ -65,10 +65,10 @@ class BehavioralProfile:
     def request_rate_per_minute(self) -> float:
         """Calculate recent request rate per minute."""
         if len(self.recent_events) < 2:
-            return float(len(self.recent_events))
+            return 0.0
         time_span = self.recent_events[-1].timestamp - self.recent_events[0].timestamp
         if time_span <= 0:
-            return float(len(self.recent_events))
+            return 0.0
         return (len(self.recent_events) / time_span) * 60.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -130,7 +130,8 @@ class BehavioralAlert:
             "verdict": self.verdict,
             "threat_type": self.threat_type,
             "risk_score": self.risk_score,
-            "blocked": self.severity in {"critical", "high"},
+            # Behavioral alerts are post-hoc detections; they never block the request.
+            "blocked": False,
             "analyzed": True,
             "analyzed_at": self.timestamp,
             "analysis_details": {

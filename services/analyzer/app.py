@@ -60,7 +60,11 @@ _ENV_DEFAULTS = {
     "BEHAVIORAL_SPIKE_MIN_RISK": 0.70,
     "BEHAVIORAL_COORDINATED_MIN_SOURCES": 3,
     "BEHAVIORAL_COORDINATED_WINDOW_SECONDS": 300,
+    "BEHAVIORAL_NOVELTY_MIN_BASELINE_SAMPLES": 3,
+    "BEHAVIORAL_NOVELTY_MIN_RISK": 0.60,
     "BEHAVIORAL_ALERT_COOLDOWN_SECONDS": 300,
+    "BEHAVIORAL_MAX_EVENTS_PER_PROFILE": 100,
+    "BEHAVIORAL_MAX_COORDINATED_EVENTS": 500,
 }
 _ENV_TYPES = {
     "REDIS_PORT": port,
@@ -77,7 +81,11 @@ _ENV_TYPES = {
     "BEHAVIORAL_SPIKE_MIN_RISK": probability,
     "BEHAVIORAL_COORDINATED_MIN_SOURCES": positive_int,
     "BEHAVIORAL_COORDINATED_WINDOW_SECONDS": positive_int,
+    "BEHAVIORAL_NOVELTY_MIN_BASELINE_SAMPLES": positive_int,
+    "BEHAVIORAL_NOVELTY_MIN_RISK": probability,
     "BEHAVIORAL_ALERT_COOLDOWN_SECONDS": positive_int,
+    "BEHAVIORAL_MAX_EVENTS_PER_PROFILE": positive_int,
+    "BEHAVIORAL_MAX_COORDINATED_EVENTS": positive_int,
 }
 
 REDIS_HOST = _ENV_DEFAULTS["REDIS_HOST"]
@@ -120,7 +128,11 @@ def load_config() -> None:
         spike_min_risk=config["BEHAVIORAL_SPIKE_MIN_RISK"],
         coordinated_min_sources=config["BEHAVIORAL_COORDINATED_MIN_SOURCES"],
         coordinated_window_seconds=config["BEHAVIORAL_COORDINATED_WINDOW_SECONDS"],
+        novelty_min_baseline_samples=config["BEHAVIORAL_NOVELTY_MIN_BASELINE_SAMPLES"],
+        novelty_min_risk=config["BEHAVIORAL_NOVELTY_MIN_RISK"],
         alert_cooldown_seconds=config["BEHAVIORAL_ALERT_COOLDOWN_SECONDS"],
+        max_events_per_profile=config["BEHAVIORAL_MAX_EVENTS_PER_PROFILE"],
+        max_coordinated_events=config["BEHAVIORAL_MAX_COORDINATED_EVENTS"],
     )
     if behavioral_engine:
         behavioral_engine.config = behavioral_config
@@ -456,20 +468,42 @@ async def analyze_prompt(
         if request.org_id and request.org_id != auth.org_id and auth.role != "admin":
             raise HTTPException(status_code=403, detail="Insufficient permissions to analyze for other tenants")
         effective_org = request.org_id if (request.org_id and auth.role == "admin") else auth.org_id
+        direct_event = {
+            "event_id": f"api-{uuid.uuid4().hex[:12]}",
+            "org_id": effective_org,
+            "source_id": request.source_id,
+            "model": "api-direct",
+            "prompt": prompt,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "risk_score": result.risk_score,
+            "verdict": result.verdict,
+            "threat_type": result.threat_type,
+        }
+        if redis_client:
+            try:
+                await redis_client.set(
+                    f"tenet:events:{direct_event['event_id']}",
+                    json.dumps(direct_event),
+                    ex=86400,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to persist direct event to Redis for %s: %s", direct_event["event_id"], exc)
+
         try:
             alerts = await behavioral_engine.process_event(
-                {
-                    "event_id": f"api-{uuid.uuid4().hex[:12]}",
-                    "org_id": effective_org,
-                    "source_id": request.source_id,
-                    "model": "api-direct",
-                    "prompt": prompt,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
+                direct_event,
                 result,
             )
             if alerts:
-                result.details["behavioral_alerts"] = [a.to_event_dict() for a in alerts]
+                has_read = auth.has_permission("read")
+                sanitized_alerts = []
+                for a in alerts:
+                    ad = a.to_event_dict()
+                    if not has_read:
+                        # Sanitize cross-source intelligence when caller lacks read permission
+                        ad["metadata"].pop("participating_sources", None)
+                    sanitized_alerts.append(ad)
+                result.details["behavioral_alerts"] = sanitized_alerts
         except Exception:
             logger.exception("Behavioral check failed in analyze_prompt")
 
