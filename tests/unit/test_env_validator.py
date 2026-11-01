@@ -7,6 +7,7 @@ import pytest
 from services.utils.env_validator import (
     EnvValidationError,
     SafeValueError,
+    boolean,
     non_negative_float,
     port,
     positive_float,
@@ -41,6 +42,23 @@ class TestPort:
     def test_port_not_a_number_raises(self):
         with pytest.raises(ValueError):
             port("abc")
+
+
+class TestBoolean:
+    """Tests for the boolean converter."""
+
+    @pytest.mark.parametrize("value", ["true", "True", "TRUE", "1", "yes", "on"])
+    def test_boolean_true_values(self, value):
+        assert boolean(value) is True
+
+    @pytest.mark.parametrize("value", ["false", "False", "FALSE", "0", "no", "off"])
+    def test_boolean_false_values(self, value):
+        assert boolean(value) is False
+
+    @pytest.mark.parametrize("value", ["invalid", "2", "-1", "maybe"])
+    def test_boolean_invalid_raises(self, value):
+        with pytest.raises(ValueError, match="must be a boolean"):
+            boolean(value)
 
 
 class TestValidateEnvVars:

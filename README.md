@@ -70,10 +70,13 @@ Your App → [TENET AI Plugin] → LLM API
 - Adapts to new attack patterns
 - High accuracy (>90% on test set)
 
-**3. Behavioral Analysis**
-- Tracks user patterns over time
-- Detects anomalous behavior
-- Identifies coordinated attacks
+**3. Behavioral Analysis Engine**
+- Rolling behavioral profiles per source and tenant with bounded retention
+- Multi-turn probing detection (identifies repeated near-threshold attempts)
+- Sudden risk spike detection relative to established baselines
+- Coordinated attack detection across distinct sources sharing attack patterns
+- Novelty signals for unexpected threat vectors
+- Automated incident deduplication and contributing events linkage
 
 ### 🛡️ Actions
 
