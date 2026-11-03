@@ -175,18 +175,31 @@ Request Body:
 
 ---
 
-## Environment Variables
-
-| Variable                   | Default           | Description                   |
-| -------------------------- | ----------------- | ----------------------------- |
-| REDIS_HOST                 | localhost         | Redis server hostname         |
-| REDIS_PORT                 | 6379              | Redis server port             |
-| API_HOST                   | 0.0.0.0           | API binding host              |
-| API_PORT                   | 8100              | API service port              |
-| MODEL_PATH                 | ./models/trained  | Location of trained ML models |
-| PROMPT_INJECTION_THRESHOLD | 0.75              | Classification threshold      |
-| SHUTDOWN_TIMEOUT           | 10.0              | Graceful shutdown timeout     |
-| CORS_ALLOWED_ORIGINS       | localhost origins | Allowed CORS origins          |
+| Variable                              | Default           | Description                                    |
+| ------------------------------------- | ----------------- | ---------------------------------------------- |
+| REDIS_HOST                            | localhost         | Redis server hostname                          |
+| REDIS_PORT                            | 6379              | Redis server port                              |
+| API_HOST                              | 0.0.0.0           | API binding host                               |
+| API_PORT                              | 8100              | API service port                               |
+| MODEL_PATH                            | ./models/trained  | Location of trained ML models                  |
+| PROMPT_INJECTION_THRESHOLD            | 0.75              | Classification threshold                       |
+| SHUTDOWN_TIMEOUT                      | 10.0              | Graceful shutdown timeout                      |
+| CORS_ALLOWED_ORIGINS                  | localhost origins | Allowed CORS origins                           |
+| BEHAVIORAL_ENABLED                    | true              | Enable behavioral analysis engine              |
+| BEHAVIORAL_WINDOW_SECONDS             | 900               | Rolling time window in seconds (15 minutes)    |
+| BEHAVIORAL_RETENTION_SECONDS          | 86400             | Profile data TTL retention in Redis (24 hours) |
+| BEHAVIORAL_PROBING_THRESHOLD          | 0.50              | Risk score threshold for probing attempts      |
+| BEHAVIORAL_PROBING_MIN_ATTEMPTS       | 3                 | Minimum near-threshold attempts to trigger     |
+| BEHAVIORAL_SPIKE_MIN_BASELINE_SAMPLES | 3                 | Minimum prior samples to form risk baseline    |
+| BEHAVIORAL_SPIKE_DELTA_THRESHOLD      | 0.40              | Risk jump above baseline required for alert    |
+| BEHAVIORAL_SPIKE_MIN_RISK             | 0.70              | Minimum risk required for spike alert          |
+| BEHAVIORAL_COORDINATED_MIN_SOURCES    | 3                 | Minimum distinct sources for coordinated alert |
+| BEHAVIORAL_COORDINATED_WINDOW_SECONDS | 300               | Coordinated burst time window (5 minutes)      |
+| BEHAVIORAL_NOVELTY_MIN_BASELINE_SAMPLES| 3                 | Minimum baseline samples before flagging novelty|
+| BEHAVIORAL_NOVELTY_MIN_RISK           | 0.60              | Minimum risk score for a novel attack type     |
+| BEHAVIORAL_ALERT_COOLDOWN_SECONDS     | 300               | Cooldown to prevent duplicate incident alerts  |
+| BEHAVIORAL_MAX_EVENTS_PER_PROFILE     | 100               | Maximum rolling events stored per profile      |
+| BEHAVIORAL_MAX_COORDINATED_EVENTS     | 500               | Maximum sliding window events for coordination |
 
 ---
 
@@ -238,6 +251,62 @@ tenet:alerts
 * Verdict
 * Threat Type
 * Analysis Timestamp
+
+---
+
+## Behavioral Analysis Engine
+
+The Behavioral Analysis Engine evaluates multi-turn interactions and cross-source patterns in real time to uncover complex adversarial campaigns that bypass single-prompt detection.
+
+### Anomaly Detectors
+
+1. **Multi-Turn Probing Detector (`behavioral_multi_turn`)**:
+   Tracks repeated near-threshold or suspicious attempts from the same source within a rolling time window (`BEHAVIORAL_WINDOW_SECONDS`), even if each individual prompt scores below single-request blocking thresholds.
+2. **Sudden Risk Spike Detector (`behavioral_risk_spike`)**:
+   Compares an incoming prompt's risk score against the source's historical baseline. When sufficient samples exist (`BEHAVIORAL_SPIKE_MIN_BASELINE_SAMPLES`) and risk jumps significantly (`BEHAVIORAL_SPIKE_DELTA_THRESHOLD`), an alert is triggered.
+3. **Coordinated Attack Detector (`behavioral_coordinated`)**:
+   Monitors cross-source suspicious activity within a correlated window (`BEHAVIORAL_COORDINATED_WINDOW_SECONDS`). Identifies bursts across distinct sources (`BEHAVIORAL_COORDINATED_MIN_SOURCES`) sharing targeted attack signatures (e.g. repeated jailbreaks or prompt injection patterns). Benign and disparate activities do not trigger coordinated alerts.
+4. **Novelty Signals Detector (`behavioral_novelty`)**:
+   Flags the emergence of an unprecedented threat category from a source with an established, predominantly benign baseline history.
+
+### Alert Deduplication & Linkage
+
+* **Deduplication Cooldown**: Ongoing incidents are tracked via cooldown fingerprints (`BEHAVIORAL_ALERT_COOLDOWN_SECONDS`) to eliminate alert storms.
+* **Contributing Event Linkage**: Every behavioral alert explicitly references all contributing `event_id`s in its `metadata.contributing_events` field, enabling SOC analysts to inspect the exact historical prompts that led to the verdict.
+* **Storage & Queueing**: Behavioral alerts are stored at `tenet:event:{alert_id}` with TTL retention and pushed to `tenet:alerts` for immediate SOC dashboard visibility.
+* **Distributed Deployment & Reliability**: In multi-process production deployments, cross-process profile synchronization and coordinated attack detection utilize atomic Redis Lua scripts (`tenet:behavioral:*`) with URL-encoded namespaces to guarantee race-free concurrency and strict tenant isolation. When operating in degraded mode without Redis, anomaly tracking uses a bounded process-local LRU store (capped at 1,000 profiles) that automatically evicts profiles exceeding `BEHAVIORAL_RETENTION_SECONDS` and reconciles dirty state into Redis upon reconnection. Cross-process attack correlation requires Redis.
+
+### Source Profile Endpoint
+
+#### Request
+
+```http
+GET /v1/behavioral/profile/{source_id}
+```
+
+Headers:
+
+```http
+x-api-key: YOUR_API_KEY
+```
+
+#### Example Response
+
+```json
+{
+  "org_id": "default-org",
+  "source_id": "user-42",
+  "total_requests": 15,
+  "first_seen": "2026-10-25T10:00:00+00:00",
+  "last_seen": "2026-10-25T10:14:30+00:00",
+  "threat_type_counts": {
+    "prompt_injection": 2
+  },
+  "baseline_risk": 0.18,
+  "request_rate_per_minute": 1.05,
+  "active_window_samples": 8
+}
+```
 
 ---
 ## API Documentation & Deployment

@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react';
 import {
   Shield, Activity, CheckCircle, XCircle, BarChart3,
   RefreshCw, Search, Cpu, Menu, X, Save, Filter, Download,
-  LogOut, Eye
+  ChevronDown, ChevronRight, AlertTriangle, LogOut, Eye
 } from 'lucide-react';
 import axios from 'axios';
 import './index.css';
@@ -123,6 +123,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'events' | 'system'>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [events, setEvents] = useState<SecurityEvent[]>(MOCK_EVENTS);
+  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [selectedAlertSnapshot, setSelectedAlertSnapshot] = useState<SecurityEvent | null>(null);
   const selectedAlert = useMemo(
     () => {
@@ -674,86 +675,202 @@ export default function App() {
                     filteredEvents.map(event => {
                       const threat = withThreatType([event])[0].resolvedThreatType;
                       const alertStatus = event.alert_status || 'new';
+                      const isExpanded = expandedEventId === event.event_id;
+                      const isBehavioral = Boolean(
+                        event.metadata?.is_behavioral_alert ||
+                        event.threat_type?.startsWith('behavioral_') ||
+                        event.source_type === 'behavioral_engine'
+                      );
+                      const contributing = event.metadata?.contributing_events ?? [];
+                      const detectionReason = event.metadata?.detection_reason || event.analysis_details?.reason;
+                      const timeWindow = event.metadata?.time_window_seconds;
+                      const severity = event.metadata?.severity || (event.verdict === 'malicious' ? 'high' : event.verdict);
+                      const orgId = event.org_id;
+
                       return (
-                        <tr key={event.event_id} data-testid={`alert-row-${event.event_id}`}>
-                          <td>
-                            <span
-                              className={`status-badge status-${alertStatus}`}
-                              data-testid={`status-badge-${event.event_id}`}
-                            >
-                              {alertStatus === 'new' && '● New'}
-                              {alertStatus === 'acknowledged' && '◐ Acknowledged'}
-                              {alertStatus === 'resolved' && '✔ Resolved'}
-                            </span>
-                          </td>
-                          <td><span className={`verdict-badge ${event.verdict}`}>{event.verdict}</span></td>
-                          <td><span className="threat-type-badge">{threatTypeLabel(threat)}</span></td>
-                          <td>{new Date(event.timestamp).toLocaleString()}</td>
-                          <td>{event.source_id}</td>
-                          <td className="prompt-cell">
-                            "{event.prompt ? (event.prompt.length > 60 ? `${event.prompt.substring(0, 60)}...` : event.prompt) : 'N/A'}"
-                          </td>
-                          <td>
-                            <div className="alert-actions-cell">
-                              <div className="alert-action-btns-row">
-                                <button
-                                  type="button"
-                                  className="view-alert-btn"
-                                  data-testid={`view-alert-btn-${event.event_id}`}
-                                  onClick={() => setSelectedAlertSnapshot(event)}
-                                >
-                                  <Eye size={13} /> View
-                                </button>
-                                {alertStatus === 'new' && (
-                                  <button
-                                    type="button"
-                                    className="ack-alert-btn"
-                                    data-testid={`ack-alert-btn-${event.event_id}`}
-                                    onClick={() => handleAcknowledge(event.event_id)}
-                                  >
-                                    Acknowledge
-                                  </button>
-                                )}
-                                {alertStatus !== 'resolved' && (
-                                  <button
-                                    type="button"
-                                    className="resolve-alert-btn"
-                                    data-testid={`resolve-alert-btn-${event.event_id}`}
-                                    onClick={() => handleResolve(event.event_id)}
-                                  >
-                                    Resolve
-                                  </button>
-                                )}
-                              </div>
-                              <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>
-                                {event.blocked ? "🚫 Blocked" : "✅ Allowed"}
+                        <Fragment key={event.event_id}>
+                          <tr
+                            className={isBehavioral ? 'behavioral-row' : ''}
+                            data-testid={`alert-row-${event.event_id}`}
+                          >
+                            <td>
+                              <span
+                                className={`status-badge status-${alertStatus}`}
+                                data-testid={`status-badge-${event.event_id}`}
+                              >
+                                {alertStatus === 'new' && '● New'}
+                                {alertStatus === 'acknowledged' && '◐ Acknowledged'}
+                                {alertStatus === 'resolved' && '✔ Resolved'}
                               </span>
-                              {feedback[event.event_id] && (
-                                <span style={{ color: "#22c55e", fontSize: "11px" }}>
-                                  ✓ Marked as {feedback[event.event_id] === "false_positive" ? "False Positive" : "False Negative"}
+                            </td>
+                            <td>
+                              <span className={`verdict-badge ${event.verdict}`}>{event.verdict}</span>
+                              {isBehavioral && (
+                                <span className="behavioral-tag" title="Behavioral Anomaly Engine Alert">
+                                  BEHAVIORAL
                                 </span>
                               )}
-                              <div className="feedback-row">
-                                <button
-                                  type="button"
-                                  className="btn-feedback-fp"
-                                  onClick={() => handleFeedback(event.event_id, "false_positive")}
-                                  data-testid={`feedback-fp-${event.event_id}`}
-                                >
-                                  False +
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn-feedback-fn"
-                                  onClick={() => handleFeedback(event.event_id, "false_negative")}
-                                  data-testid={`feedback-fn-${event.event_id}`}
-                                >
-                                  False -
-                                </button>
+                            </td>
+                            <td><span className="threat-type-badge">{threatTypeLabel(threat)}</span></td>
+                            <td>{new Date(event.timestamp).toLocaleString()}</td>
+                            <td>
+                              <div className="source-cell-container">
+                                <span className="source-id">{event.source_id}</span>
+                                {orgId && <span className="tenant-tag">Tenant: {orgId}</span>}
                               </div>
-                            </div>
-                          </td>
-                        </tr>
+                            </td>
+                            <td className="prompt-cell">
+                              <div>
+                                "{event.prompt ? (event.prompt.length > 70 ? `${event.prompt.substring(0, 70)}...` : event.prompt) : 'N/A'}"
+                              </div>
+                              {isBehavioral && (
+                                <button
+                                  type="button"
+                                  className="inspect-details-btn"
+                                  onClick={() => setExpandedEventId(isExpanded ? null : event.event_id)}
+                                  aria-expanded={isExpanded}
+                                >
+                                  {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                                  <span>{isExpanded ? 'Hide Analysis Details' : 'Inspect Contributing Events & Details'}</span>
+                                </button>
+                              )}
+                            </td>
+                            <td>
+                              <div className="alert-actions-cell">
+                                <div className="alert-action-btns-row">
+                                  <button
+                                    type="button"
+                                    className="view-alert-btn"
+                                    data-testid={`view-alert-btn-${event.event_id}`}
+                                    onClick={() => setSelectedAlertSnapshot(event)}
+                                  >
+                                    <Eye size={13} /> View
+                                  </button>
+                                  {alertStatus === 'new' && (
+                                    <button
+                                      type="button"
+                                      className="ack-alert-btn"
+                                      data-testid={`ack-alert-btn-${event.event_id}`}
+                                      onClick={() => handleAcknowledge(event.event_id)}
+                                    >
+                                      Acknowledge
+                                    </button>
+                                  )}
+                                  {alertStatus !== 'resolved' && (
+                                    <button
+                                      type="button"
+                                      className="resolve-alert-btn"
+                                      data-testid={`resolve-alert-btn-${event.event_id}`}
+                                      onClick={() => handleResolve(event.event_id)}
+                                    >
+                                      Resolve
+                                    </button>
+                                  )}
+                                </div>
+                                <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>
+                                  {event.blocked ? "🚫 Blocked" : "✅ Allowed"}
+                                </span>
+                                {feedback[event.event_id] && (
+                                  <span style={{ color: "#22c55e", fontSize: "11px" }}>
+                                    ✓ Marked as {feedback[event.event_id] === "false_positive" ? "False Positive" : "False Negative"}
+                                  </span>
+                                )}
+                                <div className="feedback-row">
+                                  <button
+                                    type="button"
+                                    className="btn-feedback-fp"
+                                    onClick={() => handleFeedback(event.event_id, "false_positive")}
+                                    data-testid={`feedback-fp-${event.event_id}`}
+                                  >
+                                    False +
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-feedback-fn"
+                                    onClick={() => handleFeedback(event.event_id, "false_negative")}
+                                    data-testid={`feedback-fn-${event.event_id}`}
+                                  >
+                                    False -
+                                  </button>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr className="expanded-details-row">
+                              <td colSpan={7}>
+                                <div className="behavioral-detail-card">
+                                  <div className="behavioral-detail-header">
+                                    <div className="detail-title">
+                                      <AlertTriangle size={16} />
+                                      <strong>Behavioral Detection Analysis: {threatTypeLabel(threat)}</strong>
+                                    </div>
+                                    <span className={`severity-badge ${severity}`}>{severity.toUpperCase()} SEVERITY</span>
+                                  </div>
+                                  <div className="behavioral-detail-grid">
+                                    <div><strong>Tenant / Organization:</strong> {orgId || 'default-org'}</div>
+                                    <div><strong>Source:</strong> {event.source_id}</div>
+                                    {timeWindow && <div><strong>Time Window:</strong> {timeWindow}s ({Math.round(timeWindow / 60)} min)</div>}
+                                    <div><strong>Target Model:</strong> {event.model}</div>
+                                  </div>
+                                  {detectionReason && (
+                                    <div className="behavioral-reason-box">
+                                      <strong>Detection Reason:</strong> {detectionReason}
+                                    </div>
+                                  )}
+                                  {event.metadata?.participating_sources && event.metadata.participating_sources.length > 0 && (
+                                    <div className="participating-sources-box">
+                                      <strong>Coordinated Sources ({event.metadata.participating_sources.length}):</strong>
+                                      <div className="chip-list">
+                                        {event.metadata.participating_sources.map(src => (
+                                          <button
+                                            key={src}
+                                            type="button"
+                                            className="source-pill"
+                                            onClick={() => {
+                                              setFilters({ ...EMPTY_FILTERS, search: src });
+                                              filtersToURL({ ...EMPTY_FILTERS, search: src });
+                                              setActiveTab('events');
+                                              setShowFilters(true);
+                                            }}
+                                            aria-label={`Filter events by source ${src}`}
+                                            title="Click to search by source"
+                                          >
+                                            {src}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {contributing.length > 0 && (
+                                    <div className="contributing-events-box">
+                                      <strong>Contributing Events ({contributing.length}):</strong>
+                                      <div className="contributing-chip-list">
+                                        {contributing.map(cId => (
+                                          <button
+                                            key={cId}
+                                            type="button"
+                                            className="contributing-event-chip"
+                                            onClick={() => {
+                                              setFilters({ ...EMPTY_FILTERS, search: cId });
+                                              filtersToURL({ ...EMPTY_FILTERS, search: cId });
+                                              setActiveTab('events');
+                                              setShowFilters(true);
+                                            }}
+                                            aria-label={`Filter events by contributing event ${cId}`}
+                                            title="Click to search for this contributing event in Alert Feed"
+                                          >
+                                            {cId}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
                       );
                     })
                   )}

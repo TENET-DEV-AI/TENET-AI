@@ -100,6 +100,16 @@ def positive_int(value: str) -> int:
     return number
 
 
+def boolean(value: str) -> bool:
+    """Convert to a boolean (e.g. 'true', 'false', '1', '0')."""
+    lower = value.strip().lower()
+    if lower in {"true", "1", "yes", "on"}:
+        return True
+    if lower in {"false", "0", "no", "off"}:
+        return False
+    raise SafeValueError("must be a boolean (true/false, 1/0)")
+
+
 # Friendly names for the built-in converters, used in error messages.
 _EXPECTED = {
     int: "an integer",
@@ -109,6 +119,7 @@ _EXPECTED = {
     non_negative_float: "a number of 0 or more",
     probability: "a number between 0 and 1",
     positive_int: "an integer of 1 or more",
+    boolean: "a boolean (true/false)",
 }
 
 
