@@ -170,6 +170,28 @@ python services/ingest/app.py      # Port 8000
 python services/analyzer/app.py    # Port 8100
 ```
 
+### 🧪 Running Tests
+
+```bash
+# Run unit tests
+pytest tests/unit/ -v
+
+# Run integration tests (full API request/response cycle, auth, detection, rate limits)
+pytest tests/integration/ -v
+
+# Run specific integration test suite
+pytest tests/integration/test_api_endpoints.py -v
+pytest tests/integration/test_auth_rbac.py -v
+pytest tests/integration/test_detection_payloads.py -v
+pytest tests/integration/test_error_handling.py -v
+pytest tests/integration/test_rate_limiting.py -v
+
+# Run test coverage
+pytest tests/ --cov=services --cov-report=term-missing
+```
+
+See [tests/integration/README.md](tests/integration/README.md) for detailed integration test architecture and options.
+
 ### Integrate into Your App
 
 #### Option A: Framework-Agnostic Plugin (Recommended)

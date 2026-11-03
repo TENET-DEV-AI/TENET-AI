@@ -50,10 +50,7 @@ jobs:
         REDIS_HOST: localhost
         REDIS_PORT: 6379
       run: |
-        # Only run if services can be mocked or local redis is enough
-        # Current test_e2e requires full services, so might fail without them
-        # pytest tests/integration/test_e2e.py -v
-        echo "Skipping E2E in CI for now - requires analyzer/ingest containers"
+        pytest tests/integration/ -v
 
   e2e-tests:
     name: Frontend E2E Tests (Playwright)
