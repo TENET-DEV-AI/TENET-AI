@@ -138,7 +138,7 @@ class TestIngestAPIEndpoints:
     def test_audit_export_endpoint(self, ingest_client: TestClient, admin_headers: dict[str, str]):
         """Test GET /v1/audit/export returns HMAC-signed audit logs."""
         # Perform an action that triggers audit
-        ingest_client.post(
+        post_resp = ingest_client.post(
             "/v1/events/llm",
             headers=admin_headers,
             json={
@@ -148,6 +148,8 @@ class TestIngestAPIEndpoints:
                 "prompt": "Generate a summary"
             }
         )
+        assert post_resp.status_code == 200
+        event_id = post_resp.json()["event_id"]
 
         resp = ingest_client.get("/v1/audit/export?limit=50", headers=admin_headers)
         assert resp.status_code == 200
@@ -157,6 +159,7 @@ class TestIngestAPIEndpoints:
         assert "records" in data
         assert data["format"] == "jsonl-compatible"
         assert len(data["records"]) > 0
+        assert any(rec.get("metadata", {}).get("event_id") == event_id for rec in data["records"])
 
         # Verify audit record structure
         first_record = data["records"][0]

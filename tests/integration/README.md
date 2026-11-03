@@ -38,7 +38,7 @@ Tests automatically detect whether a live Redis instance is available:
 
 ### Prerequisites
 
-Ensure you have development dependencies installed:
+Ensure you have development dependencies installed (including `fakeredis`, `pytest`, and `httpx` from `requirements-dev.txt`):
 ```bash
 pip install -r requirements-dev.txt
 ```
@@ -94,9 +94,10 @@ pytest tests/integration/ --cov=services --cov-report=term-missing
 
 ## CI Pipeline Integration
 
-Integration tests run automatically on every push and pull request via `.github/workflows/ci.yml`. In GitHub Actions:
+Integration tests run automatically on pushes to `main` and `feature/*` branches, and on pull requests targeting `main` via `.github/workflows/ci.yml`. In GitHub Actions:
 1. A Redis service container is started at `localhost:6379`.
-2. Python dependencies are installed from `requirements-dev.txt`.
+2. Python dependencies are installed from `requirements-dev.txt` (including `fakeredis`).
 3. Unit tests run (`pytest tests/unit/ -v`).
-4. Integration tests run (`pytest tests/integration/ -v`) directly against the live Redis service container.
+4. Backend services are launched and health-checked.
+5. Integration tests run (`pytest tests/integration/ -v`) directly against the live Redis service container.
 

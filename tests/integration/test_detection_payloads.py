@@ -69,13 +69,12 @@ class TestIngestDetectionPayloads:
         assert data["risk_score"] == 0.0
         assert data["message"] == "Event queued for analysis"
 
-    @pytest.mark.parametrize("prompt,expected_threat", PROMPT_INJECTION_PAYLOADS)
+    @pytest.mark.parametrize("prompt", [p[0] for p in PROMPT_INJECTION_PAYLOADS])
     def test_ingest_prompt_injections_blocked(
         self,
         ingest_client: TestClient,
         admin_headers: dict[str, str],
-        prompt: str,
-        expected_threat: str
+        prompt: str
     ):
         """Verify prompt injection attacks are blocked immediately."""
         resp = ingest_client.post(
@@ -95,13 +94,12 @@ class TestIngestDetectionPayloads:
         assert data["risk_score"] >= 0.8
         assert "Blocked" in data["message"]
 
-    @pytest.mark.parametrize("prompt,expected_threat", JAILBREAK_PAYLOADS)
+    @pytest.mark.parametrize("prompt", [p[0] for p in JAILBREAK_PAYLOADS])
     def test_ingest_jailbreaks_blocked(
         self,
         ingest_client: TestClient,
         admin_headers: dict[str, str],
-        prompt: str,
-        expected_threat: str
+        prompt: str
     ):
         """Verify jailbreak attempts are blocked immediately."""
         resp = ingest_client.post(
@@ -121,13 +119,12 @@ class TestIngestDetectionPayloads:
         assert data["risk_score"] >= 0.8
         assert "Blocked" in data["message"]
 
-    @pytest.mark.parametrize("prompt,expected_threat", DATA_EXTRACTION_PAYLOADS)
+    @pytest.mark.parametrize("prompt", [p[0] for p in DATA_EXTRACTION_PAYLOADS])
     def test_ingest_data_extraction_flagged_suspicious(
         self,
         ingest_client: TestClient,
         admin_headers: dict[str, str],
-        prompt: str,
-        expected_threat: str
+        prompt: str
     ):
         """Verify system prompt extraction is flagged as suspicious but not blocked on ingest."""
         resp = ingest_client.post(
@@ -217,10 +214,13 @@ class TestAnalyzerDetectionPayloads:
         self,
         analyzer_client: TestClient,
         admin_headers: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
         prompt: str,
         expected_threat: str
     ):
         """Verify analyzer identifies data extraction attempts."""
+        import services.analyzer.app as analyzer_app
+        monkeypatch.setattr(analyzer_app, "ml_model", None)
         resp = analyzer_client.post(
             "/v1/analyze",
             headers=admin_headers,

@@ -312,7 +312,7 @@ class TestTenantIsolation:
     ):
         """Audit log exports for Org B only contain Org B's records."""
         # Trigger an action under Org B
-        ingest_client.post(
+        post_resp = ingest_client.post(
             "/v1/events/llm",
             headers=secondary_headers,
             json={
@@ -322,9 +322,15 @@ class TestTenantIsolation:
                 "prompt": "Audited prompt under Org B"
             }
         )
+        assert post_resp.status_code == 200
+        event_id = post_resp.json()["event_id"]
 
-        export_b = ingest_client.get("/v1/audit/export", headers=secondary_headers).json()
+        export_resp = ingest_client.get("/v1/audit/export", headers=secondary_headers)
+        assert export_resp.status_code == 200
+        export_b = export_resp.json()
         assert export_b["org_id"] == "org-secondary"
+        assert len(export_b["records"]) > 0
+        assert any(rec.get("metadata", {}).get("event_id") == event_id for rec in export_b["records"])
         for rec in export_b["records"]:
             assert rec.get("org_id") == "org-secondary"
 

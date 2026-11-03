@@ -173,6 +173,9 @@ python services/analyzer/app.py    # Port 8100
 ### 🧪 Running Tests
 
 ```bash
+# Install test dependencies (prerequisite)
+pip install -r requirements-dev.txt
+
 # Run unit tests
 pytest tests/unit/ -v
 

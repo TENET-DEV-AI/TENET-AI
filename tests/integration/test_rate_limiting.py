@@ -71,7 +71,8 @@ class TestRateLimiting:
 
         # Exhaust rate_limit_headers (rpm_limit=3)
         for _ in range(3):
-            ingest_client.post("/v1/events/llm", headers=rate_limit_headers, json=payload)
+            resp = ingest_client.post("/v1/events/llm", headers=rate_limit_headers, json=payload)
+            assert resp.status_code == 200
         assert ingest_client.post("/v1/events/llm", headers=rate_limit_headers, json=payload).status_code == 429
 
         # admin_headers (rpm_limit=100) must still succeed
@@ -101,6 +102,23 @@ class TestDailyQuota:
 
         # Request 3 exceeds quota
         exceeded_resp = ingest_client.post("/v1/events/llm", headers=quota_limit_headers, json=payload)
+        assert exceeded_resp.status_code == 429
+        assert "daily quota exceeded" in exceeded_resp.json()["detail"].lower()
+
+    def test_daily_quota_enforced_on_analyzer(
+        self,
+        analyzer_client: TestClient,
+        quota_limit_headers: dict[str, str]
+    ):
+        """Requests to Analyzer exceeding daily_quota (configured to 2) return 429."""
+        payload = {"prompt": "Daily quota test prompt"}
+
+        # Request 1 & 2 succeed
+        assert analyzer_client.post("/v1/analyze", headers=quota_limit_headers, json=payload).status_code == 200
+        assert analyzer_client.post("/v1/analyze", headers=quota_limit_headers, json=payload).status_code == 200
+
+        # Request 3 exceeds quota
+        exceeded_resp = analyzer_client.post("/v1/analyze", headers=quota_limit_headers, json=payload)
         assert exceeded_resp.status_code == 429
         assert "daily quota exceeded" in exceeded_resp.json()["detail"].lower()
 

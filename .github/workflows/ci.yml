@@ -45,10 +45,34 @@ jobs:
       run: |
         python scripts/train_model.py --test-only
         
-    - name: Run integration tests
+    - name: Start backend services for E2E
       env:
         REDIS_HOST: localhost
         REDIS_PORT: 6379
+      run: |
+        python services/ingest/app.py &
+        python services/analyzer/app.py &
+        timeout=30
+        while [ $timeout -gt 0 ]; do
+          if curl -s http://localhost:8000/health | grep -q "ingest" && curl -s http://localhost:8100/health | grep -q "analyzer"; then
+            echo "Both Ingest and Analyzer services are healthy."
+            break
+          fi
+          sleep 1
+          timeout=$((timeout - 1))
+        done
+        if [ $timeout -le 0 ]; then
+          echo "Timed out waiting for backend services to become healthy"
+          exit 1
+        fi
+
+    - name: Run integration and E2E tests
+      env:
+        REDIS_HOST: localhost
+        REDIS_PORT: 6379
+        INGEST_URL: http://localhost:8000
+        ANALYZER_URL: http://localhost:8100
+        REQUIRE_REAL_REDIS: "true"
       run: |
         pytest tests/integration/ -v
 

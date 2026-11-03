@@ -2,8 +2,8 @@
 Integration test fixtures and configuration for TENET AI.
 
 Provides reusable fixtures for FastAPI TestClients (Ingest and Analyzer),
-Redis backend (real Redis if accessible, otherwise FakeRedis), and multi-tenant
-security configurations (roles, permissions, rate limits, quotas).
+Redis backend (real Redis on dedicated test database if accessible, otherwise FakeRedis),
+and multi-tenant security configurations (roles, permissions, rate limits, quotas).
 """
 
 import asyncio
@@ -101,11 +101,17 @@ def is_real_redis_available() -> bool:
     """Check if a real Redis instance is currently reachable."""
     host = os.getenv("REDIS_HOST", "localhost")
     port = int(os.getenv("REDIS_PORT", "6379"))
+    require_real = os.getenv("REQUIRE_REAL_REDIS", "").lower() in ("1", "true", "yes")
     try:
         import redis
         client = redis.Redis(host=host, port=port, socket_timeout=0.3, socket_connect_timeout=0.3)
-        return bool(client.ping())
-    except Exception:
+        available = bool(client.ping())
+        if not available and require_real:
+            pytest.fail(f"Real Redis is required (REQUIRE_REAL_REDIS is set) but ping failed at {host}:{port}")
+        return available
+    except Exception as exc:
+        if require_real:
+            pytest.fail(f"Real Redis is required (REQUIRE_REAL_REDIS is set) but connection failed at {host}:{port}: {exc}")
         return False
 
 
@@ -117,36 +123,54 @@ def use_real_redis() -> bool:
 
 @pytest.fixture
 def redis_backend(use_real_redis: bool):
-    """Provide a Redis client: real Redis if reachable, otherwise FakeRedis.
+    """Provide an isolated Redis client: real Redis on a dedicated test DB (default: db 15),
 
-    Cleans up tenet-created keys after each test.
+    otherwise FakeRedis. Cleans only the fixture-owned database before and after each test.
     """
+    test_db = int(os.getenv("REDIS_TEST_DB", "15"))
+
     if use_real_redis:
         host = os.getenv("REDIS_HOST", "localhost")
         port = int(os.getenv("REDIS_PORT", "6379"))
-        client = aioredis.Redis(host=host, port=port, decode_responses=True)
-        yield client
-        # Clean up test keys
+
+        # Setup: flush dedicated test DB before test
+        setup_client = aioredis.Redis(host=host, port=port, db=test_db, decode_responses=True)
+        setup_loop = asyncio.new_event_loop()
         try:
-            loop = asyncio.new_event_loop()
-            async def cleanup():
-                keys = await client.keys("tenet:*") + await client.keys("rate:*") + await client.keys("quota:*")
-                if keys:
-                    await client.delete(*keys)
-                await client.close()
-            loop.run_until_complete(cleanup())
-            loop.close()
-        except Exception:
-            pass
+            setup_loop.run_until_complete(setup_client.flushdb())
+        finally:
+            setup_loop.run_until_complete(setup_client.aclose())
+            setup_loop.close()
+
+        client = aioredis.Redis(host=host, port=port, db=test_db, decode_responses=True)
+        try:
+            yield client
+        finally:
+            # Replace cleanup through the yielded client with a fresh cleanup client
+            cleanup_client = aioredis.Redis(host=host, port=port, db=test_db, decode_responses=True)
+            cleanup_loop = asyncio.new_event_loop()
+            try:
+                cleanup_loop.run_until_complete(cleanup_client.flushdb())
+            finally:
+                cleanup_loop.run_until_complete(cleanup_client.aclose())
+                cleanup_loop.close()
+                try:
+                    close_loop = asyncio.new_event_loop()
+                    close_loop.run_until_complete(client.aclose())
+                    close_loop.close()
+                except Exception:
+                    pass
     else:
         fake_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        yield fake_client
         try:
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(fake_client.flushall())
-            loop.close()
-        except Exception:
-            pass
+            yield fake_client
+        finally:
+            cleanup_loop = asyncio.new_event_loop()
+            try:
+                cleanup_loop.run_until_complete(fake_client.flushdb())
+            finally:
+                cleanup_loop.run_until_complete(fake_client.aclose())
+                cleanup_loop.close()
 
 
 @pytest.fixture(autouse=True)
@@ -203,7 +227,10 @@ def ingest_client(redis_backend):
     ingest_mod.redis_cb._state = ingest_mod.CircuitState.CLOSED
     ingest_mod.redis_cb._failure_count = 0
 
-    with patch("redis.asyncio.Redis", return_value=redis_backend):
+    with (
+        patch("redis.asyncio.Redis", return_value=redis_backend),
+        patch("services.ingest.app.redis.Redis", return_value=redis_backend),
+    ):
         with TestClient(ingest_app) as client:
             ingest_mod.redis_client = redis_backend
             yield client
@@ -219,7 +246,10 @@ def analyzer_client(redis_backend):
     orig_client = analyzer_mod.redis_client
     analyzer_mod.redis_client = redis_backend
 
-    with patch("redis.asyncio.Redis", return_value=redis_backend):
+    with (
+        patch("redis.asyncio.Redis", return_value=redis_backend),
+        patch("services.analyzer.app.redis.Redis", return_value=redis_backend),
+    ):
         with TestClient(analyzer_app) as client:
             analyzer_mod.redis_client = redis_backend
             yield client
@@ -271,4 +301,3 @@ def blocked_key_headers() -> dict[str, str]:
 @pytest.fixture
 def blocked_org_headers() -> dict[str, str]:
     return {"X-API-Key": "test-blocked-org-key"}
-
