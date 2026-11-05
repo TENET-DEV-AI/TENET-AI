@@ -190,6 +190,9 @@ python scripts/train_model.py --test-only
 docker compose up -d
 
 # Or run individually from the repository root (requires a local Redis on port 6379)
+set -a
+. ./.env
+set +a
 python -m services.ingest.app      # Port 8000
 python -m services.analyzer.app    # Port 8100
 ```
