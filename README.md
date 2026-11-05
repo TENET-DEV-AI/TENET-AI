@@ -385,7 +385,7 @@ TENET-AI/
 | Scaling & Community | Community threat feed, RBAC/SSO for the dashboard, multi-model detection |
 | Full Protection Ecosystem | Output sanitization, self-learning loop, edge deployment |
 
-See [ROADMAP.md](ROADMAP.md) for the full, up-to-date checklist.
+See [ROADMAP.md](ROADMAP.md) for the full checklist.
 
 ---
 
