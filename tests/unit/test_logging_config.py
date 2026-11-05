@@ -130,3 +130,30 @@ class TestLogLevelCaseInsensitive:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestJSONFormatter:
+    """Tests for JSONFormatter including exception formatting and correlation ID."""
+
+    def test_json_formatter_with_exc_info(self):
+        import json
+        from logging_config import JSONFormatter
+
+        formatter = JSONFormatter()
+        try:
+            raise ValueError("Something broke")
+        except ValueError:
+            import sys
+            record = logging.LogRecord(
+                name="test_exc",
+                level=logging.ERROR,
+                pathname="test.py",
+                lineno=10,
+                msg="An error occurred",
+                args=(),
+                exc_info=sys.exc_info(),
+            )
+            output = formatter.format(record)
+            data = json.loads(output)
+            assert "exception" in data
+            assert "ValueError: Something broke" in data["exception"]
