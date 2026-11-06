@@ -14,7 +14,7 @@ faker>=40.43.0
 # Code Quality
 black>=26.10.1
 ruff>=0.17.3
-mypy>=2.4.0
+mypy>=2.4.1
 isort>=9.0.2
 
 # Security Scanning
