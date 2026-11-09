@@ -5,17 +5,17 @@
 -r requirements.txt
 
 # Testing
-pytest>=9.1.1
-pytest-asyncio>=1.4.0
+pytest>=9.2.0
+pytest-asyncio>=1.4.1
 pytest-cov>=4.1.0
 pytest-mock>=3.17.0
-faker>=40.43.0
+faker>=40.44.0
 
 # Code Quality
 black>=26.10.1
-ruff>=0.17.1
-mypy>=2.3.0
-isort>=8.0.1
+ruff>=0.17.3
+mypy>=2.4.1
+isort>=9.0.2
 
 # Security Scanning
 bandit>=1.9.4

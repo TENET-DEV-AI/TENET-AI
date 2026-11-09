@@ -13,23 +13,28 @@ export interface RefreshConfig {
   apiBase: string;
   apiKey: string;
   analyzerHealthUrl: string;
+  /** Per request, in ms. Kept below the 10 s poll interval so one stalled request cannot hold back later polls. */
+  timeoutMs?: number;
 }
+
+export const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 
 export async function fetchDashboardSnapshot(
   cfg: RefreshConfig,
   signal: AbortSignal,
 ): Promise<DashboardSnapshot> {
-  const config = { headers: { 'X-API-Key': cfg.apiKey }, signal };
+  const timeout = cfg.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const config = { headers: { 'X-API-Key': cfg.apiKey }, signal, timeout };
   const [eventsRes, statsRes, ingestHealth, analyzerHealth] = await Promise.allSettled([
     axios.get(`${cfg.apiBase}/v1/events`, config),
     axios.get(`${cfg.apiBase}/v1/stats`, config),
-    axios.get(`${cfg.apiBase}/health`, { signal }),
-    axios.get(cfg.analyzerHealthUrl, { signal }),
+    axios.get(`${cfg.apiBase}/health`, { signal, timeout }),
+    axios.get(cfg.analyzerHealthUrl, { signal, timeout }),
   ]);
   return {
     events:
       eventsRes.status === 'fulfilled'
-        ? Array.isArray(eventsRes.value.data.events) ? eventsRes.value.data.events : []
+        ? Array.isArray(eventsRes.value.data?.events) ? eventsRes.value.data.events : []
         : undefined,
     stats: statsRes.status === 'fulfilled' ? statsRes.value.data || undefined : undefined,
     health: {
@@ -37,6 +42,28 @@ export async function fetchDashboardSnapshot(
       analyzer: analyzerHealth.status === 'fulfilled' && analyzerHealth.value.status === 200,
     },
   };
+}
+
+/**
+ * A refresh brings the events back as the backend has them. An analyst can acknowledge or resolve an alert in the
+ * dashboard before the backend stores that, so when an event comes back without an alert status the one set here
+ * is kept.
+ */
+export function preserveAlertState(previous: SecurityEvent[], fetched: SecurityEvent[]): SecurityEvent[] {
+  const previousById = new Map(previous.map(e => [e.event_id, e]));
+  return fetched.map(fe => {
+    const existing = previousById.get(fe.event_id);
+    if (existing && existing.alert_status && !fe.alert_status) {
+      return {
+        ...fe,
+        alert_status: existing.alert_status,
+        acknowledged_at: existing.acknowledged_at,
+        resolved_at: existing.resolved_at,
+        resolution_note: existing.resolution_note,
+      };
+    }
+    return fe;
+  });
 }
 
 export interface RefreshHandlers {
@@ -68,8 +95,9 @@ export function createRefreshCoordinator(
     try {
       const snapshot = await load(own.signal);
       if (current === generation && !own.signal.aborted) handlers.onData(snapshot);
-    } catch {
-      /* aborted or unexpected failure: keep the previous data */
+    } catch (err) {
+      // An aborted refresh is expected. Anything else keeps the previous data, but is not hidden.
+      if (!own.signal.aborted) console.error('Dashboard refresh failed', err);
     } finally {
       if (current === generation && !own.signal.aborted) {
         inFlight = false;

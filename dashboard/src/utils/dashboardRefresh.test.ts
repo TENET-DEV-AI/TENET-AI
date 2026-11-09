@@ -1,9 +1,11 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
-import type { Stats } from '../types/security';
+import type { SecurityEvent, Stats } from '../types/security';
 import {
   createRefreshCoordinator,
+  DEFAULT_REQUEST_TIMEOUT_MS,
   fetchDashboardSnapshot,
+  preserveAlertState,
   type DashboardSnapshot,
 } from './dashboardRefresh';
 
@@ -30,6 +32,23 @@ function setup() {
 }
 
 describe('createRefreshCoordinator', () => {
+  it('logs an unexpected failure but not an aborted refresh, and keeps the previous data', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onData = vi.fn();
+    const failing = createRefreshCoordinator(() => Promise.reject(new Error('boom')), { onLoading: vi.fn(), onData });
+    await failing.refresh();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(onData).not.toHaveBeenCalled();
+    error.mockClear();
+    const t = setup();
+    const first = t.refresh();
+    t.refresh();
+    t.calls[0].d.resolve(snap(1));
+    await first;
+    expect(error).not.toHaveBeenCalled();
+    error.mockRestore();
+  });
+
   it('ignores a stale response that resolves after a newer one', async () => {
     const t = setup();
     const first = t.refresh();
@@ -159,11 +178,73 @@ describe('fetchDashboardSnapshot', () => {
     expect(out.health).toEqual({ ingest: true, analyzer: false });
   });
 
+  it('gives every request a timeout below the 10 s poll interval, or the one it is configured with', async () => {
+    const spy = vi.spyOn(axios, 'get').mockResolvedValue({ data: { events: [] }, status: 200 });
+    await fetchDashboardSnapshot(cfg, new AbortController().signal);
+    spy.mock.calls.forEach(call => expect((call[1] as { timeout: number }).timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MS));
+    expect(DEFAULT_REQUEST_TIMEOUT_MS).toBeLessThan(10000);
+    spy.mockClear();
+    await fetchDashboardSnapshot({ ...cfg, timeoutMs: 1234 }, new AbortController().signal);
+    expect(spy).toHaveBeenCalledTimes(4);
+    spy.mock.calls.forEach(call => expect((call[1] as { timeout: number }).timeout).toBe(1234));
+  });
+
+  it('still returns stats and health when the events response has no body', async () => {
+    vi.spyOn(axios, 'get').mockImplementation(async (url: string) => {
+      if (url.endsWith('/v1/events')) return { data: null, status: 200 };
+      if (url.endsWith('/v1/stats')) return { data: { total_events: 9 }, status: 200 };
+      return { data: {}, status: 200 };
+    });
+    const out = await fetchDashboardSnapshot(cfg, new AbortController().signal);
+    expect(out.events).toEqual([]);
+    expect(out.stats).toEqual({ total_events: 9 });
+    expect(out.health).toEqual({ ingest: true, analyzer: true });
+  });
+
   it('passes the abort signal to every request', async () => {
     const spy = vi.spyOn(axios, 'get').mockResolvedValue({ data: { events: [] }, status: 200 });
     const signal = new AbortController().signal;
     await fetchDashboardSnapshot(cfg, signal);
     expect(spy).toHaveBeenCalledTimes(4);
     spy.mock.calls.forEach(call => expect((call[1] as { signal: AbortSignal }).signal).toBe(signal));
+  });
+});
+
+describe('preserveAlertState', () => {
+  const ev = (id: string, extra: Partial<SecurityEvent> = {}) => ({ event_id: id, ...extra }) as SecurityEvent;
+
+  it('keeps the status an analyst set when the backend sends the event without one', () => {
+    const previous = [ev('a', { alert_status: 'acknowledged', acknowledged_at: '2026-11-01T10:00:00Z' })];
+    const [merged] = preserveAlertState(previous, [ev('a')]);
+    expect(merged.alert_status).toBe('acknowledged');
+    expect(merged.acknowledged_at).toBe('2026-11-01T10:00:00Z');
+  });
+
+  it('keeps a resolution with its time and note', () => {
+    const previous = [ev('a', { alert_status: 'resolved', resolved_at: '2026-11-01T11:00:00Z', resolution_note: 'false positive' })];
+    const [merged] = preserveAlertState(previous, [ev('a')]);
+    expect(merged).toMatchObject({ alert_status: 'resolved', resolved_at: '2026-11-01T11:00:00Z', resolution_note: 'false positive' });
+  });
+
+  it('lets a status from the backend win over the local one', () => {
+    const previous = [ev('a', { alert_status: 'acknowledged' })];
+    const [merged] = preserveAlertState(previous, [ev('a', { alert_status: 'resolved' })]);
+    expect(merged.alert_status).toBe('resolved');
+  });
+
+  it('returns the backend list: new events are added and events the backend dropped are gone', () => {
+    const previous = [ev('old', { alert_status: 'acknowledged' }), ev('keep', { alert_status: 'resolved' })];
+    const merged = preserveAlertState(previous, [ev('keep'), ev('new')]);
+    expect(merged.map(e => e.event_id)).toEqual(['keep', 'new']);
+    expect(merged[0].alert_status).toBe('resolved');
+    expect(merged[1].alert_status).toBeUndefined();
+  });
+
+  it('does not change the lists it is given', () => {
+    const previous = [ev('a', { alert_status: 'acknowledged' })];
+    const fetched = [ev('a')];
+    preserveAlertState(previous, fetched);
+    expect(fetched[0].alert_status).toBeUndefined();
+    expect(previous[0].alert_status).toBe('acknowledged');
   });
 });

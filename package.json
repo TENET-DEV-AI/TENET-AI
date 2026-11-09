@@ -1,0 +1,20 @@
+{
+  "name": "tenet-ai",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev:dashboard": "npm --prefix dashboard run dev",
+    "dev:landing": "npm --prefix landing run dev",
+    "build:dashboard": "npm --prefix dashboard run build",
+    "build:landing": "npm --prefix landing run build",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:dashboard": "playwright test tests/e2e/dashboard",
+    "test:e2e:landing": "playwright test tests/e2e/landing",
+    "test:e2e:visual": "playwright test tests/e2e/visual"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.51.1"
+  }
+}

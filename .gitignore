@@ -207,3 +207,6 @@ __marimo__/
 # Node.js / Frontend
 node_modules/
 dist/
+playwright-report/
+test-results/
+blob-report/
