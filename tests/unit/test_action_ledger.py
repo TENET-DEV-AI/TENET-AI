@@ -8,6 +8,8 @@ import pytest
 from services.security.ledger import (
     GENESIS_HASH,
     ActionLedger,
+    LedgerEntry,
+    _entry_hash,
     generate_signing_key,
     load_private_key,
     load_public_key,
@@ -52,6 +54,7 @@ def test_empty_ledger_verifies(tmp_path):
 
 def test_editing_any_field_breaks_verification(ledger):
     for column, value in [
+        ("id", "a-other"),
         ("verdict", "require_approval"),
         ("reasoning", "nothing to see"),
         ("actor", "someone-else"),
@@ -121,6 +124,42 @@ def test_invalid_verdict_is_rejected(ledger):
     with pytest.raises(ValueError):
         ledger.append(entry_id="x", actor="a", action="b", tool="c", verdict="maybe", reasoning="r")
     assert ledger.verify().checked == 5
+
+
+def test_validly_signed_record_with_invalid_verdict_fails_verification(tmp_path):
+    key = generate_signing_key()
+    led = ActionLedger(tmp_path / "v.db", key)
+    led.append(entry_id="1", actor="a", action="b", tool="c", verdict="allow", reasoning="r")
+    # Build a correctly hashed, correctly signed record whose verdict is not one we issue.
+    prev = led.entries()[-1]
+    fields = {
+        "seq": 2, "id": "2", "timestamp": "2026-01-01T00:00:00+00:00", "actor": "a", "action": "b",
+        "tool": "c", "scope": "", "verdict": "maybe", "reasoning": "r", "prev_hash": prev.hash,
+    }
+    digest = _entry_hash(fields)
+    forged = LedgerEntry(**fields, hash=digest, signature=key.sign(bytes.fromhex(digest)).hex())
+    result = verify_entries([prev, forged], led.public_key)
+    assert not result.ok and result.broken_seq == 2
+    assert "verdict" in result.reason
+
+
+def test_damaged_rows_report_failure_instead_of_raising(ledger):
+    conn = _db(ledger)
+    conn.execute("UPDATE ledger SET actor = ? WHERE seq = 2", (bytes([0, 1]),))
+    conn.execute("UPDATE ledger SET signature = ? WHERE seq = 4", (bytes([0, 1]),))
+    conn.commit()
+    result = ledger.verify()
+    assert not result.ok and result.broken_seq == 2
+    conn.execute("UPDATE ledger SET actor = 'agent-1' WHERE seq = 2")
+    conn.commit()
+    # seq 2 now fails its hash (original actor was agent-1, so restoring it makes it valid again)
+    result = ledger.verify()
+    assert not result.ok and result.broken_seq == 4
+
+
+def test_in_memory_database_is_refused():
+    with pytest.raises(ValueError):
+        ActionLedger(":memory:", generate_signing_key())
 
 
 def test_concurrent_appends_keep_one_chain(tmp_path):

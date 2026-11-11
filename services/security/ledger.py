@@ -129,6 +129,10 @@ class ActionLedger:
 
     def __init__(self, path: Union[str, Path], signing_key: Ed25519PrivateKey) -> None:
         self._path = str(path)
+        if self._path in ("", ":memory:") or self._path.startswith("file::memory:"):
+            # Every operation opens its own connection, and an in-memory database does not
+            # survive that. Refuse it rather than failing on the first append.
+            raise ValueError("ActionLedger needs a file-backed database path, not an in-memory one")
         self._key = signing_key
         self._lock = threading.Lock()
         conn = self._connect()
@@ -226,11 +230,17 @@ def verify_entries(entries: list[LedgerEntry], public_key: Ed25519PublicKey) -> 
             )
         if entry.prev_hash != expected_prev:
             return VerifyResult(False, checked, entry.seq, "prev_hash does not match the previous record")
-        if _entry_hash(entry.to_dict()) != entry.hash:
+        if entry.verdict not in VERDICTS:
+            return VerifyResult(False, checked, entry.seq, "record has an invalid verdict")
+        try:
+            hash_matches = _entry_hash(entry.to_dict()) == entry.hash
+        except (TypeError, ValueError):  # a damaged row, e.g. a BLOB where text belongs
+            hash_matches = False
+        if not hash_matches:
             return VerifyResult(False, checked, entry.seq, "record contents do not match its hash")
         try:
             public_key.verify(bytes.fromhex(entry.signature), bytes.fromhex(entry.hash))
-        except (InvalidSignature, ValueError):
+        except (InvalidSignature, ValueError, TypeError):
             return VerifyResult(False, checked, entry.seq, "signature is not valid for this record")
         expected_prev = entry.hash
         expected_seq += 1
