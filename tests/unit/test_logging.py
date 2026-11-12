@@ -6,11 +6,6 @@ import os
 from logging.handlers import RotatingFileHandler
 import pytest
 
-# Add project root to sys.path to find the module
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
 from services.utils.logging_config import setup_logging
 
 class TestLoggingConfig:
