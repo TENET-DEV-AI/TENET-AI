@@ -15,7 +15,7 @@ jinja2>=3.1.6  # CVE-2024-56326, CVE-2025-27516 fixes
 h11>=0.16.0  # CVE-2025-43859 fix
 
 # ML & Data Science
-scikit-learn>=1.9.0
+scikit-learn>=1.9.1
 numpy>=2.5.4
 pandas>=3.1.0
 joblib>=1.6.0
