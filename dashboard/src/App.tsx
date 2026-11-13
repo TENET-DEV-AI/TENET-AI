@@ -4,7 +4,7 @@ import {
   RefreshCw, Search, Cpu, Menu, X, Save, Filter, Download,
   LogOut, Eye
 } from 'lucide-react';
-import axios from 'axios';
+import { createRefreshCoordinator, fetchDashboardSnapshot, preserveAlertState } from './utils/dashboardRefresh';
 import './index.css';
 import './App.css';
 
@@ -151,6 +151,7 @@ export default function App() {
   const [showFilters, setShowFilters] = useState(false);
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const searchRef = useRef<HTMLInputElement>(null);
+  const refreshRef = useRef<ReturnType<typeof createRefreshCoordinator> | null>(null);
 
   const handleAcknowledge = useCallback((eventId: string) => {
     const timestamp = new Date().toISOString();
@@ -275,50 +276,34 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [activeTab]);
 
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const config = { headers: { 'X-API-Key': API_KEY } };
-
-      const [eventsRes, statsRes, ingestHealth, analyzerHealth] = await Promise.allSettled([
-        axios.get(`${API_BASE}/v1/events`, config),
-        axios.get(`${API_BASE}/v1/stats`, config),
-        axios.get(`${API_BASE}/health`),
-        axios.get(`http://localhost:8100/health`)
-      ]);
-      if (eventsRes.status === 'fulfilled') {
-        const fetchedEvents = Array.isArray(eventsRes.value.data.events) ? eventsRes.value.data.events : [];
-        setEvents(prev => {
-          const prevMap = new Map(prev.map(e => [e.event_id, e]));
-          return fetchedEvents.map((fe: SecurityEvent) => {
-            const existing = prevMap.get(fe.event_id);
-            if (existing && existing.alert_status && !fe.alert_status) {
-              return {
-                ...fe,
-                alert_status: existing.alert_status,
-                acknowledged_at: existing.acknowledged_at,
-                resolved_at: existing.resolved_at,
-                resolution_note: existing.resolution_note,
-              };
-            }
-            return fe;
-          });
-        });
-      }
-      if (statsRes.status === 'fulfilled') setStats(prev => statsRes.value.data || prev);
-      setHealth({
-        ingest: ingestHealth.status === 'fulfilled' && ingestHealth.value.status === 200,
-        analyzer: analyzerHealth.status === 'fulfilled' && analyzerHealth.value.status === 200
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
+  const fetchData = useCallback(() => refreshRef.current?.refresh(), []);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
+    const coordinator = createRefreshCoordinator(
+      signal => fetchDashboardSnapshot(
+        { apiBase: API_BASE, apiKey: API_KEY, analyzerHealthUrl: 'http://localhost:8100/health' },
+        signal,
+      ),
+      {
+        onLoading: setLoading,
+        onData: snapshot => {
+          if (snapshot.events) {
+            const fetched = snapshot.events;
+            setEvents(prev => preserveAlertState(prev, fetched));
+          }
+          if (snapshot.stats) setStats(snapshot.stats);
+          setHealth(snapshot.health);
+        },
+      },
+    );
+    refreshRef.current = coordinator;
+    coordinator.refresh();
+    const interval = setInterval(coordinator.poll, 10000);
+    return () => {
+      clearInterval(interval);
+      coordinator.stop();
+      refreshRef.current = null;
+    };
   }, []);
 
   const filteredEvents = events.filter(ev => {
@@ -479,7 +464,7 @@ export default function App() {
             </button>
             <h1>{activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}</h1>
           </div>
-          <button className="refresh-btn" onClick={fetchData} disabled={loading} aria-label="Refresh data">
+          <button className="refresh-btn" onClick={fetchData} aria-busy={loading} aria-label="Refresh data">
             <RefreshCw size={18} className={loading ? 'spinning' : ''} />
           </button>
         </header>
