@@ -2,7 +2,7 @@ import axios from 'axios';
 import type { SecurityEvent, Stats } from '../types/security';
 
 export interface DashboardSnapshot {
-  /** undefined when the events request failed, so the caller keeps its previous value */
+  /** undefined when the events request failed or came back without an events array, so the caller keeps its previous value */
   events?: SecurityEvent[];
   /** undefined when the stats request failed or returned nothing */
   stats?: Stats;
@@ -34,7 +34,7 @@ export async function fetchDashboardSnapshot(
   return {
     events:
       eventsRes.status === 'fulfilled'
-        ? Array.isArray(eventsRes.value.data?.events) ? eventsRes.value.data.events : []
+        ? Array.isArray(eventsRes.value.data?.events) ? eventsRes.value.data.events : undefined
         : undefined,
     stats: statsRes.status === 'fulfilled' ? statsRes.value.data || undefined : undefined,
     health: {

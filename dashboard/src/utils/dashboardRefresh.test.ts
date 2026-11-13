@@ -14,8 +14,9 @@ const snap = (n: number): DashboardSnapshot => ({ events: [], stats: { total_eve
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
-  const promise = new Promise<T>(r => { resolve = r; });
-  return { promise, resolve };
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
 }
 
 function setup() {
@@ -46,6 +47,22 @@ describe('createRefreshCoordinator', () => {
     t.calls[0].d.resolve(snap(1));
     await first;
     expect(error).not.toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  it('does not log or call handlers when a superseded request rejects after being aborted', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const t = setup();
+    const first = t.refresh();
+    const second = t.refresh();
+    expect(t.calls[0].signal.aborted).toBe(true);
+    t.calls[0].d.reject(new Error('canceled'));
+    await first;
+    expect(error).not.toHaveBeenCalled();
+    expect(t.onData).not.toHaveBeenCalled();
+    t.calls[1].d.resolve(snap(2));
+    await second;
+    expect(t.onData).toHaveBeenCalledTimes(1);
     error.mockRestore();
   });
 
@@ -196,7 +213,7 @@ describe('fetchDashboardSnapshot', () => {
       return { data: {}, status: 200 };
     });
     const out = await fetchDashboardSnapshot(cfg, new AbortController().signal);
-    expect(out.events).toEqual([]);
+    expect(out.events).toBeUndefined();
     expect(out.stats).toEqual({ total_events: 9 });
     expect(out.health).toEqual({ ingest: true, analyzer: true });
   });
