@@ -26,5 +26,5 @@ ipython>=9.17.1
 watchdog>=6.0.0
 
 # Type Stubs
-types-requests>=2.33.0.20260518
+types-requests>=2.33.0.20261030
 types-redis>=4.6.0.20241004
