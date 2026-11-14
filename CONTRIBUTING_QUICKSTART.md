@@ -9,10 +9,10 @@ For the full contribution guidelines, coding standards, and release process, see
 
 ## Prerequisites
 
-Make sure these are installed: **Python 3.11+**, **Node.js**, **Docker + Docker Compose** (Docker Desktop includes both), and **Git**.
+Make sure these are installed: **Python 3.12+**, **Node.js**, **Docker + Docker Compose** (Docker Desktop includes both), and **Git**.
 
 ```bash
-python --version        # 3.11+
+python --version        # 3.12+
 node --version          # 18+
 docker compose version  # 2.20+
 git --version
