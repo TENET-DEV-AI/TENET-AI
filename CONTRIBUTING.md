@@ -30,7 +30,7 @@ Before creating a bug report:
 
 **Environment**:
 - OS: [e.g., Ubuntu 22.04, macOS 14, Windows 11]
-- Python: [e.g., 3.11.5]
+- Python: [e.g., 3.12.0]
 - TENET AI version: [e.g., 0.1.0]
 
 **Logs**: Attach relevant logs if available
