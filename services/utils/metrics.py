@@ -1,8 +1,9 @@
 import time
-from typing import Callable, Awaitable
+from collections.abc import Awaitable, Callable
+
 from fastapi import Request, Response
+from prometheus_client import Counter, Gauge, Histogram
 from starlette.middleware.base import BaseHTTPMiddleware
-from prometheus_client import Counter, Histogram, REGISTRY
 
 # Define standard request metrics
 REQUEST_COUNT = Counter(
@@ -23,6 +24,58 @@ DETECTION_COUNT = Counter(
     "Total threats detected by type and verdict",
     ["service", "threat_type", "verdict"]
 )
+
+# Action Interposition metrics
+ACTION_INGEST_COUNT = Counter(
+    "tenet_action_events_ingested_total",
+    "Total action events ingested",
+    ["service", "provider", "status"],
+)
+
+ACTION_INGEST_DROPPED = Counter(
+    "tenet_action_events_dropped_total",
+    "Action events dropped (circuit breaker or storage failure)",
+    ["service", "reason"],
+)
+
+ACTION_DUPLICATE_COUNT = Counter(
+    "tenet_action_events_duplicate_total",
+    "Duplicate action events suppressed by idempotency guard",
+    ["service", "provider"],
+)
+
+ACTION_OBSERVED_COUNT = Counter(
+    "tenet_action_observed_total",
+    "Total action events processed and observed by analyzer",
+    ["tool_name", "provider"],
+)
+
+ACTION_QUEUE_DEPTH = Gauge(
+    "tenet_action_queue_depth",
+    "Current depth of action event queues",
+    ["queue"],
+)
+
+ACTION_OLDEST_EVENT_AGE = Gauge(
+    "tenet_action_oldest_event_age_seconds",
+    "Age of oldest unconsumed action event in seconds",
+)
+
+ACTION_OVERFLOW_DRAINED = Counter(
+    "tenet_action_overflow_drained_total",
+    "Total action events transferred from overflow to primary queue",
+)
+
+ACTION_OVERFLOW_DRAIN_FAILURES = Counter(
+    "tenet_action_overflow_drain_failures_total",
+    "Total failed attempts to drain overflow queue",
+)
+
+ACTION_QUEUE_SATURATED = Counter(
+    "tenet_action_queue_saturated_total",
+    "Total action events rejected due to capacity saturation (429)",
+)
+
 
 def increment_detection(service: str, threat_type: str, verdict: str) -> None:
     """Helper to increment detection counters."""

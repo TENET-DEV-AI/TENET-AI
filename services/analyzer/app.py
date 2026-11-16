@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from services.utils.logging_config import setup_logging
 from services.security import SecurityManager
-from services.utils.metrics import PrometheusMiddleware, increment_detection
+from services.utils.metrics import ACTION_OBSERVED_COUNT, ACTION_OLDEST_EVENT_AGE, ACTION_OVERFLOW_DRAINED, ACTION_OVERFLOW_DRAIN_FAILURES, PrometheusMiddleware, increment_detection
 from services.utils.env_validator import non_negative_float, port, probability, validate_env_vars
 from prometheus_client import make_asgi_app
 logger = setup_logging(__name__)
@@ -113,6 +113,7 @@ ml_model = None
 vectorizer = None
 stop_event: Optional[asyncio.Event] = None
 background_task = None
+action_background_task = None
 security = SecurityManager(
     service_name="analyzer",
     redis_call=lambda coro: coro,
@@ -196,7 +197,7 @@ async def startup():
         Exception: Logged internally; does not propagate to prevent startup
         failure when Redis or models are temporarily unavailable.
         """
-    global redis_client, ml_model, vectorizer, background_task, stop_event
+    global redis_client, ml_model, vectorizer, background_task, stop_event, action_background_task
 
     load_config()
 
@@ -218,8 +219,15 @@ async def startup():
 
     
     # Create stop event and start background processor
-    stop_event = asyncio.Event()
-    background_task = asyncio.create_task(process_event_queue())
+    if stop_event is None:
+        stop_event = asyncio.Event()
+    else:
+        stop_event.clear()
+
+    if background_task is None or background_task.done():
+        background_task = asyncio.create_task(process_event_queue())
+    if action_background_task is None or action_background_task.done():
+        action_background_task = asyncio.create_task(process_action_event_queue())
 
 
 @app.on_event("shutdown")
@@ -238,25 +246,29 @@ async def shutdown():
             Exception: Logged internally; shutdown always completes even if
                 individual cleanup steps fail.
     """
-    global redis_client, stop_event, background_task
+    global redis_client, stop_event, background_task, action_background_task
     
-    # Signal the background task to stop
+    # Signal the background tasks to stop
     if stop_event:
         stop_event.set()
-        logger.info("Stop event set, waiting for background task to finish")
+        logger.info("Stop event set, waiting for background tasks to finish")
     
-    # Wait for background task to complete gracefully
-    if background_task:
-        try:
-            await asyncio.wait_for(background_task, timeout=SHUTDOWN_TIMEOUT)
-            logger.info("Background task completed")
-        except asyncio.TimeoutError:
-            logger.warning("Background task did not complete in time, cancelling")
-            background_task.cancel()
+    # Wait for background tasks to complete gracefully
+    for task_name, task in [("prompt", background_task), ("action", action_background_task)]:
+        if task:
             try:
-                await background_task
-            except asyncio.CancelledError:  # NOSONAR - Don't re-raise in shutdown handler, cancellation is expected
-                logger.info("Background task cancelled successfully")
+                await asyncio.wait_for(task, timeout=SHUTDOWN_TIMEOUT)
+                logger.info("Background %s task completed", task_name)
+            except asyncio.TimeoutError:
+                logger.warning("Background %s task did not complete in time, cancelling", task_name)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    logger.info("Background %s task cancelled successfully", task_name)
+
+    background_task = None
+    action_background_task = None
 
     # Close Redis connection
     if redis_client:
@@ -843,6 +855,117 @@ async def process_event_queue():
                 
         except Exception:
             logger.exception("Queue processing error")
+            await _wait_with_timeout(5.0)
+
+
+
+CLUSTER_TAG = "{tenet}"
+MAX_PRIMARY_CAPACITY = int(os.getenv("TENET_ACTION_QUEUE_MAX_CAPACITY", "25000"))
+
+LUA_DRAIN_OVERFLOW_SCRIPT = """
+local primary_len = redis.call('LLEN', KEYS[2])
+if primary_len < tonumber(ARGV[1]) then
+    local item = redis.call('RPOPLPUSH', KEYS[1], KEYS[2])
+    if item then
+        return 1
+    end
+end
+return 0
+"""
+
+async def _drain_overflow_queue_step() -> int:
+    """Atomically transfer events from overflow to primary queue if primary has capacity."""
+    global redis_client
+    if not redis_client:
+        return 0
+    try:
+        keys = [f"{CLUSTER_TAG}:events:action:overflow", f"{CLUSTER_TAG}:events:action:queue"]
+        args = [MAX_PRIMARY_CAPACITY]
+        res = await redis_client.eval(LUA_DRAIN_OVERFLOW_SCRIPT, len(keys), *keys, *args)
+        if res == 1:
+            ACTION_OVERFLOW_DRAINED.inc()
+            return 1
+        return 0
+    except Exception as exc:
+        ACTION_OVERFLOW_DRAIN_FAILURES.inc()
+        logger.warning("Failed to drain overflow queue: %s", exc)
+        return 0
+
+
+async def _process_single_action_event(event_data: str) -> None:
+    """Process a single action event popped from tenet:events:action:queue."""
+    try:
+        event = json.loads(event_data)
+    except json.JSONDecodeError:
+        logger.warning("Failed to decode JSON from action queue, skipping")
+        return
+
+    if not isinstance(event, dict):
+        logger.warning("Action event is not a dictionary, skipping")
+        return
+
+    event_id = event.get("event_id")
+    if not event_id or not isinstance(event_id, str):
+        logger.warning("Skipping action event without valid event_id")
+        return
+
+    event_id = event_id.strip()
+    if not event_id:
+        return
+
+    logger.info("Processing action event: %s (tool: %s)", event_id, event.get("tool_name"))
+    tool_name = str(event.get("tool_name", "unknown"))
+    provider = str(event.get("provider", "unknown"))
+
+    event["verdict"] = "observed"
+    event["observed_at"] = datetime.now(timezone.utc).isoformat()
+    event["status"] = "observed"
+
+    timestamp_str = event.get("timestamp")
+    if timestamp_str and isinstance(timestamp_str, str):
+        try:
+            created_at = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
+            ACTION_OLDEST_EVENT_AGE.set(max(0.0, age_seconds))
+        except Exception:
+            pass
+
+    if redis_client:
+        try:
+            await redis_client.set(f"{CLUSTER_TAG}:action_event:{event_id}", json.dumps(event), ex=86400)
+        except Exception:
+            logger.exception("Failed to update action event %s in Redis", event_id)
+
+    ACTION_OBSERVED_COUNT.labels(tool_name=tool_name, provider=provider).inc()
+
+
+OVERFLOW_DRAIN_EVENT_INTERVAL = int(os.getenv("TENET_OVERFLOW_DRAIN_INTERVAL", "50"))
+
+async def process_action_event_queue():
+    """Background task to process action events from the Redis action queue."""
+    global stop_event, redis_client
+    events_since_drain_attempt = 0
+
+    while not stop_event.is_set():
+        try:
+            if not redis_client:
+                await _wait_with_timeout(5.0)
+                continue
+
+            event_json = await redis_client.rpop(f"{CLUSTER_TAG}:events:action:queue")
+            if event_json:
+                await _process_single_action_event(event_json)
+                events_since_drain_attempt += 1
+                if events_since_drain_attempt >= OVERFLOW_DRAIN_EVENT_INTERVAL:
+                    events_since_drain_attempt = 0
+                    await _drain_overflow_queue_step()
+            else:
+                events_since_drain_attempt = 0
+                drained = await _drain_overflow_queue_step()
+                if not drained:
+                    await _wait_with_timeout(1.0)
+        except Exception:
+            logger.exception("Action queue processing error")
             await _wait_with_timeout(5.0)
 
 

@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any
 
 import requests
+
+from services.security.action_event import ActionEvent
+from services.security.interposition.extractors import extract_tool_calls
+
+logger = logging.getLogger(__name__)
 
 
 class TenetPluginError(RuntimeError):
@@ -20,7 +28,7 @@ class GuardResult:
     verdict: str
     risk_score: float
     event_id: str
-    raw: Dict[str, Any]
+    raw: dict[str, Any]
 
 
 class TenetSecurityPlugin:
@@ -38,7 +46,7 @@ class TenetSecurityPlugin:
         source_id: str = "default",
         timeout_seconds: float = 5.0,
         fail_mode: str = "open",
-        session: Optional[requests.Session] = None,
+        session: requests.Session | None = None,
     ) -> None:
         if fail_mode not in {"open", "closed"}:
             raise ValueError("fail_mode must be 'open' or 'closed'")
@@ -52,15 +60,15 @@ class TenetSecurityPlugin:
         self.session = session or requests.Session()
 
     @property
-    def headers(self) -> Dict[str, str]:
+    def headers(self) -> dict[str, str]:
         return {"X-API-Key": self.api_key, "Content-Type": "application/json"}
 
     def inspect_prompt(
         self,
         prompt: str,
         model: str,
-        source_id: Optional[str] = None,
-        source_type: Optional[str] = None,
+        source_id: str | None = None,
+        source_type: str | None = None,
     ) -> GuardResult:
         """Send a prompt to TENET and return a normalized guard result."""
         payload = {
@@ -98,17 +106,148 @@ class TenetSecurityPlugin:
                 raw={"error": str(exc)},
             )
 
+    def emit_action_event(self, action_event: ActionEvent | dict[str, Any]) -> dict[str, Any]:
+        """Dispatch a single ActionEvent to the Ingest service in observe mode.
+
+        Observe-only contract: Never halts host execution. Returns degraded status
+        on network failures, timeouts, 429 saturation, or storage outages.
+        """
+        if isinstance(action_event, ActionEvent):
+            payload = action_event.model_dump()
+        else:
+            payload = dict(action_event)
+
+        payload.setdefault("source_id", self.source_id)
+        payload.setdefault("source_type", self.source_type)
+
+        try:
+            response = self.session.post(
+                f"{self.api_url}/v1/events/action",
+                headers=self.headers,
+                json=payload,
+                timeout=self.timeout_seconds,
+            )
+            # Handle capacity saturation (429) gracefully without throwing
+            if response.status_code == 429:
+                logger.warning("TENET action queue saturated (429); telemetry dropped fail-open")
+                return {
+                    "event_id": payload.get("event_id", ""),
+                    "status": "rejected_capacity",
+                    "observe_only": True,
+                    "persisted": False,
+                    "queued": False,
+                    "overflow": False,
+                    "degraded": True,
+                    "retryable": True,
+                }
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to emit action event to TENET: %s", exc)
+            # Action monitoring is strictly observe-only and fail-open
+            return {
+                "event_id": payload.get("event_id", ""),
+                "status": "degraded",
+                "error": str(exc),
+                "observe_only": True,
+                "persisted": False,
+                "queued": False,
+                "overflow": False,
+                "degraded": True,
+            }
+
+    def intercept_response_actions(
+        self,
+        llm_response: Any,
+        provider: str = "openai",
+        session_id: str | None = None,
+        source_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Extract tool calls from model response and emit them to Ingest service.
+
+        Operates in observe-only mode with strict fail-open semantics: errors do not
+        prevent caller execution under any circumstance.
+        """
+        try:
+            extracted_actions = extract_tool_calls(
+                llm_response,
+                provider=provider,
+                session_id=session_id,
+                source_id=source_id or self.source_id,
+                turn_id=turn_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Tool-call extraction failed for provider %s: %s", provider, exc)
+            return []
+
+        results: list[dict[str, Any]] = []
+        for action in extracted_actions:
+            result = self.emit_action_event(action)
+            results.append(result)
+        return results
+
+    def intercept_mcp_session(self, session: Any) -> Any:
+        """Wrap an MCP client session's call_tool method for observe-only monitoring.
+
+        Extracts proposed MCP tool executions before transmission over stdio or HTTP.
+        Guarantees that tool execution ALWAYS proceeds fail-open even if telemetry fails.
+        """
+        original_call_tool = getattr(session, "call_tool", None)
+        if not callable(original_call_tool):
+            logger.warning("Session does not expose callable 'call_tool'; returning session unmodified")
+            return session
+
+        plugin = self
+
+        if asyncio.iscoroutinefunction(original_call_tool):
+            async def wrapped_call_tool(name: str, arguments: dict[str, Any] | None = None, *args: Any, **kwargs: Any) -> Any:
+                try:
+                    mcp_request = {
+                        "jsonrpc": "2.0",
+                        "id": kwargs.get("call_id") or "mcp_call",
+                        "method": "tools/call",
+                        "params": {"name": name, "arguments": arguments or {}},
+                    }
+                    plugin.intercept_response_actions(mcp_request, provider="mcp")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("MCP action interception telemetry error (continuing fail-open): %s", exc)
+                return await original_call_tool(name, arguments, *args, **kwargs)
+            session.call_tool = wrapped_call_tool
+        else:
+            def wrapped_call_tool(name: str, arguments: dict[str, Any] | None = None, *args: Any, **kwargs: Any) -> Any:
+                try:
+                    mcp_request = {
+                        "jsonrpc": "2.0",
+                        "id": kwargs.get("call_id") or "mcp_call",
+                        "method": "tools/call",
+                        "params": {"name": name, "arguments": arguments or {}},
+                    }
+                    plugin.intercept_response_actions(mcp_request, provider="mcp")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("MCP action interception telemetry error (continuing fail-open): %s", exc)
+                return original_call_tool(name, arguments, *args, **kwargs)
+            session.call_tool = wrapped_call_tool
+
+        return session
+
+    # Alias for client convention
+    intercept_mcp_client = intercept_mcp_session
+
     def secure_call(
         self,
         *,
         prompt: str,
         model: str,
         llm_callable: Callable[..., Any],
-        llm_kwargs: Optional[Dict[str, Any]] = None,
-        source_id: Optional[str] = None,
-        source_type: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Guard a single LLM call and run it only when allowed."""
+        llm_kwargs: dict[str, Any] | None = None,
+        source_id: str | None = None,
+        source_type: str | None = None,
+        session_id: str | None = None,
+        provider: str | None = None,
+        intercept_actions: bool = False,
+    ) -> dict[str, Any]:
+        """Guard a single LLM call, run it if allowed, and inspect response actions."""
         analysis = self.inspect_prompt(
             prompt=prompt,
             model=model,
@@ -125,22 +264,37 @@ class TenetSecurityPlugin:
 
         kwargs = dict(llm_kwargs or {})
         llm_response = llm_callable(**kwargs)
-        return {
+
+        result: dict[str, Any] = {
             "status": "success",
             "analysis": analysis.raw,
             "llm_response": llm_response,
         }
 
+        if intercept_actions or provider is not None:
+            detected_provider = provider or "openai"
+            result["intercepted_actions"] = self.intercept_response_actions(
+                llm_response=llm_response,
+                provider=detected_provider,
+                session_id=session_id,
+                source_id=source_id,
+            )
+
+        return result
+
     def secure_messages_call(
         self,
         *,
-        messages: Iterable[Dict[str, Any]],
+        messages: Iterable[dict[str, Any]],
         model: str,
         llm_callable: Callable[..., Any],
-        llm_kwargs: Optional[Dict[str, Any]] = None,
-        source_id: Optional[str] = None,
-        source_type: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        llm_kwargs: dict[str, Any] | None = None,
+        source_id: str | None = None,
+        source_type: str | None = None,
+        session_id: str | None = None,
+        provider: str | None = None,
+        intercept_actions: bool = False,
+    ) -> dict[str, Any]:
         """Guard a chat-style messages payload before model execution."""
         flattened_prompt = self._extract_prompt_from_messages(messages)
         return self.secure_call(
@@ -150,11 +304,14 @@ class TenetSecurityPlugin:
             llm_kwargs=llm_kwargs,
             source_id=source_id,
             source_type=source_type,
+            session_id=session_id,
+            provider=provider,
+            intercept_actions=intercept_actions,
         )
 
     @staticmethod
-    def _extract_prompt_from_messages(messages: Iterable[Dict[str, Any]]) -> str:
-        parts: List[str] = []
+    def _extract_prompt_from_messages(messages: Iterable[dict[str, Any]]) -> str:
+        parts: list[str] = []
         for message in messages:
             role = message.get("role", "unknown")
             content = message.get("content", "")

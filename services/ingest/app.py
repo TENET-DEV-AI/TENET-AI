@@ -22,11 +22,20 @@ from enum import Enum
 from typing import Any, Optional
 
 import redis.asyncio as redis
-from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, Security
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, Security, status
+from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
-from services.security import SecurityManager
-from services.utils.metrics import PrometheusMiddleware, increment_detection
+from services.security import ActionEvent, SecurityManager
+from services.utils.metrics import (
+    ACTION_DUPLICATE_COUNT,
+    ACTION_INGEST_COUNT,
+    ACTION_INGEST_DROPPED,
+    ACTION_QUEUE_DEPTH,
+    ACTION_QUEUE_SATURATED,
+    PrometheusMiddleware,
+    increment_detection,
+)
 from prometheus_client import make_asgi_app
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -210,6 +219,20 @@ class LLMEventResponse(BaseModel):
     verdict: str = "pending"
     message: str = "Event queued for analysis"
     degraded: bool = False
+
+
+class ActionEventResponse(BaseModel):
+    event_id: str
+    timestamp: str
+    tool_name: str
+    status: str = "queued"
+    observe_only: bool = True
+    persisted: bool = True
+    queued: bool = True
+    overflow: bool = False
+    degraded: bool = False
+    sanitized: bool = True
+    raw_payload_hash: str
 
 
 class HealthResponse(BaseModel):
@@ -432,6 +455,340 @@ async def ingest_llm_event(request: LLMEventRequest, x_api_key: Optional[str] = 
         message="Blocked - malicious pattern detected" if blocked else "Event queued for analysis",
         degraded=degraded,
     )
+
+
+
+CLUSTER_TAG = "{tenet}"
+MAX_PRIMARY_CAPACITY = int(os.getenv("TENET_ACTION_QUEUE_MAX_CAPACITY", "25000"))
+MAX_OVERFLOW_CAPACITY = int(os.getenv("TENET_ACTION_OVERFLOW_MAX_CAPACITY", "5000"))
+
+LUA_ACTION_INGEST_SCRIPT = """
+local dedup_key = KEYS[3]
+local event_key = KEYS[1]
+local primary_queue = KEYS[2]
+local overflow_queue = KEYS[4]
+
+local event_id = ARGV[1]
+local payload_json = ARGV[2]
+local event_ttl = tonumber(ARGV[3])
+local dedup_ttl = tonumber(ARGV[4])
+local max_primary = tonumber(ARGV[5])
+local max_overflow = tonumber(ARGV[6])
+local dedup_enabled = tonumber(ARGV[7])
+
+-- 1. Check deduplication key (only if client provided a call_id and dedup is enabled)
+if dedup_enabled == 1 then
+    local existing_event_id = redis.call('GET', dedup_key)
+    if existing_event_id then
+        local orig_key = '{tenet}:action_event:' .. existing_event_id
+        if redis.call('EXISTS', orig_key) == 1 then
+            return {'DUPLICATE_PERSISTED', existing_event_id}
+        else
+            return {'DUPLICATE_EVICTED', existing_event_id}
+        end
+    end
+end
+
+-- 2. Check if event was already committed under this event_id
+if redis.call('EXISTS', event_key) == 1 then
+    return {'ALREADY_COMMITTED', event_id}
+end
+
+-- 3. Check Primary Queue Capacity
+local primary_len = redis.call('LLEN', primary_queue)
+if primary_len < max_primary then
+    redis.call('SET', event_key, payload_json, 'EX', event_ttl)
+    redis.call('LPUSH', primary_queue, payload_json)
+    if dedup_enabled == 1 then
+        redis.call('SET', dedup_key, event_id, 'EX', dedup_ttl)
+    end
+    return {'QUEUED', tostring(primary_len + 1)}
+end
+
+-- 4. Primary Full: Check Overflow Queue Capacity
+local overflow_len = redis.call('LLEN', overflow_queue)
+if overflow_len < max_overflow then
+    redis.call('SET', event_key, payload_json, 'EX', event_ttl)
+    redis.call('LPUSH', overflow_queue, payload_json)
+    if dedup_enabled == 1 then
+        redis.call('SET', dedup_key, event_id, 'EX', dedup_ttl)
+    end
+    return {'OVERFLOW', tostring(overflow_len + 1)}
+end
+
+-- 5. Terminal Capacity Exhaustion (Primary + Overflow Full)
+return {'SATURATED', tostring(primary_len + overflow_len)}
+"""
+
+@app.post(
+    "/v1/events/action",
+    response_model=ActionEventResponse,
+    tags=["Events"],
+    summary="Ingest Agent Action Event",
+    description="Submits an intercepted agent tool call for security monitoring. Requires 'ingest' permission.",
+    responses={
+        200: {"model": ActionEventResponse, "description": "Action event queued or duplicate recognized"},
+        202: {"model": ActionEventResponse, "description": "Action event buffered in overflow queue"},
+        429: {"description": "Action queue capacity saturated; dropped fail-open"},
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
+        403: {"model": ErrorResponse, "description": "Insufficient permissions"},
+        422: {"model": ErrorResponse, "description": "Validation error"},
+    },
+)
+async def ingest_action_event(
+    event: ActionEvent,
+    response: Response,
+    x_api_key: Optional[str] = Security(api_key_scheme),
+):
+    auth = await security.require_auth(x_api_key, required_permission="ingest")
+
+    event_dict = event.model_dump()
+    if not event_dict.get("org_id"):
+        event_dict["org_id"] = auth.org_id
+
+    payload_json = json.dumps(event_dict)
+
+    event_key = f"{CLUSTER_TAG}:action_event:{event.event_id}"
+    primary_queue = f"{CLUSTER_TAG}:events:action:queue"
+    overflow_queue = f"{CLUSTER_TAG}:events:action:overflow"
+    if event.call_id:
+        dedup_key = f"{CLUSTER_TAG}:action_dedup:{auth.org_id}:{event.source_id}:{event.call_id}"
+        dedup_enabled = 1
+    else:
+        dedup_key = f"{CLUSTER_TAG}:action_dedup:disabled"
+        dedup_enabled = 0
+
+    keys = [event_key, primary_queue, dedup_key, overflow_queue]
+    args = [
+        event.event_id,
+        payload_json,
+        86400,
+        300,
+        MAX_PRIMARY_CAPACITY,
+        MAX_OVERFLOW_CAPACITY,
+        dedup_enabled,
+    ]
+
+    res = None
+    if redis_client:
+        keys_and_args = keys + args
+        res = await redis_call(redis_client.eval(LUA_ACTION_INGEST_SCRIPT, len(keys), *keys_and_args))
+
+    if res is not None and isinstance(res, (list, tuple)) and len(res) >= 2:
+        status_tag = res[0].decode("utf-8") if isinstance(res[0], bytes) else str(res[0])
+        status_val = res[1].decode("utf-8") if isinstance(res[1], bytes) else str(res[1])
+
+        if status_tag == "QUEUED":
+            response.status_code = status.HTTP_200_OK
+            response.headers["X-Tenet-Audit"] = "durable"
+            ACTION_INGEST_COUNT.labels(service="ingest", provider=event.provider, status="queued").inc()
+            ACTION_QUEUE_DEPTH.labels(queue="primary").set(float(status_val))
+            security.audit(
+                action="ingest_action_event",
+                result="queued",
+                context=auth,
+                metadata={"event_id": event.event_id, "tool_name": event.tool_name, "provider": event.provider, "degraded": False},
+            )
+            return ActionEventResponse(
+                event_id=event.event_id,
+                timestamp=event.timestamp,
+                tool_name=event.tool_name,
+                status="queued",
+                observe_only=True,
+                persisted=True,
+                queued=True,
+                overflow=False,
+                degraded=False,
+                sanitized=True,
+                raw_payload_hash=event.raw_payload_hash,
+            )
+
+        elif status_tag == "DUPLICATE_PERSISTED":
+            response.status_code = status.HTTP_200_OK
+            response.headers["X-Tenet-Audit"] = "duplicate"
+            ACTION_DUPLICATE_COUNT.labels(service="ingest", provider=event.provider).inc()
+            logger.info("Duplicate action event suppressed: %s:%s", event.source_id, event.call_id)
+            security.audit(
+                action="ingest_action_event",
+                result="duplicate_suppressed",
+                context=auth,
+                metadata={"event_id": event.event_id, "tool_name": event.tool_name, "provider": event.provider, "degraded": False},
+            )
+            return ActionEventResponse(
+                event_id=event.event_id,
+                timestamp=event.timestamp,
+                tool_name=event.tool_name,
+                status="duplicate_suppressed",
+                observe_only=True,
+                persisted=True,
+                queued=False,
+                overflow=False,
+                degraded=False,
+                sanitized=True,
+                raw_payload_hash=event.raw_payload_hash,
+            )
+
+        elif status_tag == "DUPLICATE_EVICTED":
+            response.status_code = status.HTTP_200_OK
+            response.headers["X-Tenet-Audit"] = "duplicate-evicted"
+            response.headers["Warning"] = '199 - "Original record evicted from storage"'
+            ACTION_DUPLICATE_COUNT.labels(service="ingest", provider=event.provider).inc()
+            logger.warning("Duplicate action event with evicted storage record: %s:%s", event.source_id, event.call_id)
+            return ActionEventResponse(
+                event_id=event.event_id,
+                timestamp=event.timestamp,
+                tool_name=event.tool_name,
+                status="duplicate_evicted",
+                observe_only=True,
+                persisted=False,
+                queued=False,
+                overflow=False,
+                degraded=True,
+                sanitized=True,
+                raw_payload_hash=event.raw_payload_hash,
+            )
+
+        elif status_tag == "ALREADY_COMMITTED":
+            response.status_code = status.HTTP_200_OK
+            response.headers["X-Tenet-Audit"] = "already-committed"
+            return ActionEventResponse(
+                event_id=event.event_id,
+                timestamp=event.timestamp,
+                tool_name=event.tool_name,
+                status="already_committed",
+                observe_only=True,
+                persisted=True,
+                queued=False,
+                overflow=False,
+                degraded=False,
+                sanitized=True,
+                raw_payload_hash=event.raw_payload_hash,
+            )
+
+        elif status_tag == "OVERFLOW":
+            response.status_code = status.HTTP_202_ACCEPTED
+            response.headers["X-Tenet-Audit"] = "overflow"
+            response.headers["Warning"] = '199 - "Action queued in overflow buffer"'
+            ACTION_INGEST_COUNT.labels(service="ingest", provider=event.provider, status="overflow").inc()
+            ACTION_QUEUE_DEPTH.labels(queue="overflow").set(float(status_val))
+            logger.warning("Primary action queue full; event %s buffered in overflow", event.event_id)
+            security.audit(
+                action="ingest_action_event",
+                result="overflow_buffered",
+                context=auth,
+                metadata={"event_id": event.event_id, "tool_name": event.tool_name, "provider": event.provider, "degraded": True},
+            )
+            return ActionEventResponse(
+                event_id=event.event_id,
+                timestamp=event.timestamp,
+                tool_name=event.tool_name,
+                status="overflow_buffered",
+                observe_only=True,
+                persisted=True,
+                queued=False,
+                overflow=True,
+                degraded=True,
+                sanitized=True,
+                raw_payload_hash=event.raw_payload_hash,
+            )
+
+        elif status_tag == "SATURATED":
+            ACTION_QUEUE_SATURATED.inc()
+            ACTION_INGEST_DROPPED.labels(service="ingest", reason="capacity_saturated").inc()
+            logger.warning("Action queues saturated (%s events); event %s dropped fail-open", status_val, event.event_id)
+            security.audit(
+                action="ingest_action_event",
+                result="rejected_capacity",
+                context=auth,
+                metadata={"event_id": event.event_id, "tool_name": event.tool_name, "provider": event.provider, "degraded": True},
+            )
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                headers={
+                    "X-Tenet-Audit": "saturated",
+                    "Retry-After": "5",
+                },
+                content={
+                    "event_id": event.event_id,
+                    "status": "rejected_capacity",
+                    "observe_only": True,
+                    "persisted": False,
+                    "queued": False,
+                    "overflow": False,
+                    "degraded": True,
+                    "retryable": True,
+                    "retry_after_seconds": 5,
+                    "detail": "Action queue and overflow capacity exhausted",
+                },
+            )
+
+    # Storage unavailable / Redis outage: observe-only fail-open
+    ACTION_INGEST_DROPPED.labels(service="ingest", reason="redis_unavailable").inc()
+    response.status_code = status.HTTP_200_OK
+    response.headers["X-Tenet-Audit"] = "unpersisted"
+    response.headers["Warning"] = '199 - "Storage Unavailable"'
+    logger.warning("Action event %s processed in degraded mode (not persisted to Redis)", event.event_id)
+
+    security.audit(
+        action="ingest_action_event",
+        result="observed",
+        context=auth,
+        metadata={
+            "event_id": event.event_id,
+            "tool_name": event.tool_name,
+            "provider": event.provider,
+            "degraded": True,
+        },
+    )
+
+    return ActionEventResponse(
+        event_id=event.event_id,
+        timestamp=event.timestamp,
+        tool_name=event.tool_name,
+        status="degraded",
+        observe_only=True,
+        persisted=False,
+        queued=False,
+        overflow=False,
+        degraded=True,
+        sanitized=True,
+        raw_payload_hash=event.raw_payload_hash,
+    )
+
+
+@app.get(
+    "/v1/events/action/{event_id}",
+    tags=["Events"],
+    summary="Get Action Event Details",
+    description="Retrieves detailed information for a specific intercepted action event. Requires 'read' permission.",
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
+        403: {"model": ErrorResponse, "description": "Insufficient permissions"},
+        404: {"model": ErrorResponse, "description": "Action event not found"},
+        503: {"model": ErrorResponse, "description": "Service degraded"},
+    },
+)
+async def get_action_event(event_id: str, x_api_key: Optional[str] = Security(api_key_scheme)):
+    auth = await security.require_auth(x_api_key, required_permission="read")
+    if not event_id.strip():
+        raise HTTPException(status_code=422, detail="event_id must not be empty")
+
+    if redis_cb.state == CircuitState.OPEN or not redis_client:
+        raise HTTPException(status_code=503, detail="Service degraded - event store unavailable")
+
+    try:
+        data = await redis_call(redis_client.get(f"{CLUSTER_TAG}:action_event:{event_id}"))
+        if not data:
+            raise HTTPException(status_code=404, detail="Action event not found")
+        parsed = json.loads(data)
+        if parsed.get("org_id") != auth.org_id:
+            raise HTTPException(status_code=404, detail="Action event not found")
+        return parsed
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to retrieve action event %s: %s", event_id, exc)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
 def quick_heuristic_check(prompt: str) -> tuple[bool, float, str, str]:
