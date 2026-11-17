@@ -45,15 +45,74 @@ jobs:
       run: |
         python scripts/train_model.py --test-only
         
-    - name: Run integration tests
+
+  integration:
+    name: Backend Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v7.0.1
+
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.14'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: python -m pip install -r requirements-dev.txt
+
+    - name: Start ingest and analyzer
       env:
         REDIS_HOST: localhost
         REDIS_PORT: 6379
+        API_KEY: tenet-ci-integration-key
+        MODEL_PATH: ./models/trained
       run: |
-        # Only run if services can be mocked or local redis is enough
-        # Current test_e2e requires full services, so might fail without them
-        # pytest tests/integration/test_e2e.py -v
-        echo "Skipping E2E in CI for now - requires analyzer/ingest containers"
+        python -m uvicorn services.ingest.app:app --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/ingest.log" 2>&1 &
+        python -m uvicorn services.analyzer.app:app --host 127.0.0.1 --port 8100 > "$RUNNER_TEMP/analyzer.log" 2>&1 &
+        python - <<'PY'
+        import json
+        import time
+        from urllib.error import URLError
+        from urllib.request import urlopen
+
+        for service, port in (("ingest", 8000), ("analyzer", 8100)):
+            for _ in range(30):
+                try:
+                    with urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:
+                        health = json.load(response)
+                    if health.get("service") == service and health.get("redis_connected"):
+                        break
+                except (URLError, TimeoutError, ValueError):
+                    pass
+                time.sleep(1)
+            else:
+                raise SystemExit(f"{service} failed to become healthy with Redis")
+        PY
+
+    - name: Run integration tests
+      env:
+        INGEST_URL: http://127.0.0.1:8000
+        ANALYZER_URL: http://127.0.0.1:8100
+        API_KEY: tenet-ci-integration-key
+      run: pytest tests/integration/ -v -ra
+
+    - name: Show service logs on failure
+      if: failure()
+      run: |
+        cat "$RUNNER_TEMP/ingest.log" 2>/dev/null || true
+        cat "$RUNNER_TEMP/analyzer.log" 2>/dev/null || true
 
   e2e-tests:
     name: Frontend E2E Tests (Playwright)
