@@ -29,7 +29,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-
 from services.analyzer.app import (
     _drain_overflow_queue_step,
     _process_single_action_event,
@@ -54,10 +53,14 @@ class FakeActionRedis:
         self.overflow_queue = []
         self.primary_cap = primary_cap
         self.overflow_cap = overflow_cap
+        self.last_eval_keys = []
+        self.last_eval_args = []
 
     async def eval(self, script, numkeys, *keys_and_args):
-        keys = keys_and_args[:numkeys]
-        args = keys_and_args[numkeys:]
+        keys = list(keys_and_args[:numkeys])
+        args = list(keys_and_args[numkeys:])
+        self.last_eval_keys = keys
+        self.last_eval_args = args
 
         # Drain script evaluation
         if "RPOPLPUSH" in script:
@@ -79,8 +82,10 @@ class FakeActionRedis:
         if dedup_enabled == 1 and dedup_key:
             existing_event_id = self.store.get(dedup_key)
             if existing_event_id:
-                orig_key = f"{CLUSTER_TAG}:action_event:{existing_event_id}"
-                if orig_key in self.store:
+                orig_prefix = args[7] if len(args) > 7 else f"{CLUSTER_TAG}:action_event:"
+                orig_key = f"{orig_prefix}{existing_event_id}"
+                legacy_key = f"{CLUSTER_TAG}:action_event:{existing_event_id}"
+                if orig_key in self.store or legacy_key in self.store:
                     return ["DUPLICATE_PERSISTED", existing_event_id]
                 else:
                     return ["DUPLICATE_EVICTED", existing_event_id]
@@ -132,6 +137,20 @@ class FakeActionRedis:
         if "overflow" in key:
             return self.overflow_queue.pop(0) if self.overflow_queue else None
         return self.primary_queue.pop(0) if self.primary_queue else None
+
+    async def rpush(self, key, value):
+        if "overflow" in key:
+            self.overflow_queue.append(value)
+            return len(self.overflow_queue)
+        self.primary_queue.append(value)
+        return len(self.primary_queue)
+
+    async def lindex(self, key, index):
+        q = self.overflow_queue if "overflow" in key else self.primary_queue
+        try:
+            return q[index]
+        except IndexError:
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +408,8 @@ def test_deduplication_key_without_event_record_reports_evicted():
         event_id = res1.json()["event_id"]
 
         # Simulate early key eviction of the event record under memory pressure
-        del fake_redis.store[f"{CLUSTER_TAG}:action_event:{event_id}"]
+        fake_redis.store.pop(f"{CLUSTER_TAG}:action_event:{event_id}", None)
+        fake_redis.store.pop(f"{CLUSTER_TAG}:action_event:default-org:{event_id}", None)
 
         # Client sends duplicate
         res2 = client.post("/v1/events/action", headers=AUTH_HEADERS, json=event_payload)
@@ -538,6 +558,8 @@ def test_redis_unavailable_during_telemetry_dispatch():
 
 def test_fail_open_host_execution_after_http_429_and_timeout():
     """Verify that host tool execution proceeds normally even if Ingest returns 429 or times out."""
+    import requests
+
     class Mock429Session:
         def post(self, url, headers=None, json=None, timeout=None):
             class Resp:
@@ -546,43 +568,57 @@ def test_fail_open_host_execution_after_http_429_and_timeout():
                 def json(self): return {"status": "rejected_capacity"}
             return Resp()
 
-    plugin = TenetSecurityPlugin(session=Mock429Session())
+    class MockTimeoutSession:
+        def post(self, url, headers=None, json=None, timeout=None):
+            raise requests.exceptions.Timeout("Connection timed out to TENET ingest")
 
     class AgentToolClient:
         def call_tool(self, name, arguments=None):
             return f"Executed {name} with {arguments}"
 
+    # Verify HTTP 429 fail-open
+    plugin_429 = TenetSecurityPlugin(session=Mock429Session())
     agent_client = AgentToolClient()
-    wrapped_client = plugin.intercept_mcp_client(agent_client)
+    wrapped_429 = plugin_429.intercept_mcp_client(agent_client)
+    result_429 = wrapped_429.call_tool("send_command", {"cmd": "ls"})
+    assert result_429 == "Executed send_command with {'cmd': 'ls'}"
 
-    result = wrapped_client.call_tool("send_command", {"cmd": "ls"})
-    assert result == "Executed send_command with {'cmd': 'ls'}"
+    # Verify Timeout fail-open
+    plugin_timeout = TenetSecurityPlugin(session=MockTimeoutSession())
+    wrapped_timeout = plugin_timeout.intercept_mcp_client(agent_client)
+    result_timeout = wrapped_timeout.call_tool("send_command", {"cmd": "pwd"})
+    assert result_timeout == "Executed send_command with {'cmd': 'pwd'}"
 
 
 def test_redis_cluster_key_slot_compatibility():
-    """Verify that all keys in the Ingest Lua script contain '{tenet}' and hash to the same slot."""
-    event_id = "test_event_123"
-    org_id = "org_456"
-    source_id = "agent_789"
-    call_id = "call_abc"
+    """Verify that all keys passed to Lua eval contain '{tenet}' and hash to the same slot."""
+    fake_redis = FakeActionRedis()
+    with patch("services.ingest.app.redis_client", fake_redis):
+        response = client.post(
+            "/v1/events/action",
+            headers=AUTH_HEADERS,
+            json={
+                "source_id": "agent_789",
+                "call_id": "call_abc",
+                "provider": "openai",
+                "tool_name": "db_query",
+                "tool_args": {"foo": "bar"},
+            },
+        )
+        assert response.status_code == 200
+        keys = fake_redis.last_eval_keys
+        assert len(keys) == 4
 
-    event_key = f"{{tenet}}:action_event:{event_id}"
-    primary_queue = f"{CLUSTER_TAG}:events:action:queue"
-    overflow_queue = f"{CLUSTER_TAG}:events:action:overflow"
-    dedup_key = f"{{tenet}}:action_dedup:{org_id}:{source_id}:{call_id}"
+        # In Redis Cluster, the hash slot is determined by the substring inside {...}
+        extracted_hashtags = []
+        for k in keys:
+            match = re.search(r"\{([^}]+)\}", k)
+            assert match is not None, f"Key {k} is missing Redis hashtag"
+            extracted_hashtags.append(match.group(1))
 
-    keys = [event_key, primary_queue, overflow_queue, dedup_key]
-
-    # In Redis Cluster, the hash slot is determined by the substring inside {...}
-    extracted_hashtags = []
-    for k in keys:
-        match = re.search(r"\{([^}]+)\}", k)
-        assert match is not None, f"Key {k} is missing Redis hashtag"
-        extracted_hashtags.append(match.group(1))
-
-    # All hashtags must be strictly identical
-    assert len(set(extracted_hashtags)) == 1
-    assert extracted_hashtags[0] == "tenet"
+        # All hashtags must be strictly identical
+        assert len(set(extracted_hashtags)) == 1
+        assert extracted_hashtags[0] == "tenet"
 
 
 # ---------------------------------------------------------------------------
@@ -724,7 +760,7 @@ async def test_end_to_end_plugin_to_analyzer_flow():
             item = await fake_redis.rpop(f"{CLUSTER_TAG}:events:action:queue")
             await _process_single_action_event(item)
 
-        stored_raw = fake_redis.store.get(f"{CLUSTER_TAG}:action_event:{event_id}")
+        stored_raw = fake_redis.store.get(f"{CLUSTER_TAG}:action_event:default-org:{event_id}") or fake_redis.store.get(f"{CLUSTER_TAG}:action_event:{event_id}")
         assert stored_raw is not None
         stored_event = json.loads(stored_raw)
         assert stored_event["verdict"] == "observed"
@@ -808,27 +844,38 @@ async def test_analyzer_shutdown_when_task_none():
 @pytest.mark.asyncio
 async def test_overflow_progress_during_continuous_primary_traffic():
     """Verify that overflow queue drains periodically even when primary queue is never empty."""
+    import asyncio
+
     import services.analyzer.app as analyzer_module
     fake_redis = FakeActionRedis(primary_cap=100, overflow_cap=10)
     fake_redis.overflow_queue.append(json.dumps({"event_id": "overflow_item_01", "tool_name": "t_overflow"}))
 
-    # Fill primary queue with 60 events (greater than OVERFLOW_DRAIN_EVENT_INTERVAL = 50)
-    for i in range(60):
+    # Fill primary queue with 25 events
+    for i in range(25):
         fake_redis.primary_queue.append(json.dumps({"event_id": f"primary_item_{i}", "tool_name": f"t_{i}"}))
 
     initial_overflow_len = len(fake_redis.overflow_queue)
     assert initial_overflow_len == 1
 
-    with patch.object(analyzer_module, "redis_client", fake_redis), \
-         patch("services.analyzer.app.OVERFLOW_DRAIN_EVENT_INTERVAL", 10):
-        # Process 15 events from primary queue without letting primary queue reach 0
-        for _ in range(15):
-            event_json = await fake_redis.rpop(f"{CLUSTER_TAG}:events:action:queue")
-            await analyzer_module._process_single_action_event(event_json)
+    stop_evt = asyncio.Event()
+    orig_process = analyzer_module._process_single_action_event
+    processed_count = 0
 
-        # Trigger periodic drain step
-        drained = await analyzer_module._drain_overflow_queue_step()
-        assert drained == 1
+    async def counting_process(event_data):
+        nonlocal processed_count
+        await orig_process(event_data)
+        processed_count += 1
+        if processed_count >= 15:
+            stop_evt.set()
+
+    with patch.object(analyzer_module, "redis_client", fake_redis), \
+         patch.object(analyzer_module, "stop_event", stop_evt), \
+         patch.object(analyzer_module, "_process_single_action_event", counting_process), \
+         patch("services.analyzer.app.OVERFLOW_DRAIN_EVENT_INTERVAL", 10):
+        await analyzer_module.process_action_event_queue()
+
+        # The loop ran, processed primary events, and automatically invoked _drain_overflow_queue_step()
+        assert processed_count >= 15
         assert len(fake_redis.overflow_queue) == 0
         assert any("overflow_item_01" in item for item in fake_redis.primary_queue)
 
@@ -849,3 +896,116 @@ async def test_overflow_draining_rejected_when_primary_at_capacity():
         assert drained == 0
         assert len(fake_redis.overflow_queue) == 1
         assert len(fake_redis.primary_queue) == 5
+
+
+def test_ingest_overwrites_caller_supplied_org_id():
+    """Verify that caller-supplied org_id is always overwritten by authenticated tenant org_id."""
+    fake_redis = FakeActionRedis()
+    with patch("services.ingest.app.redis_client", fake_redis):
+        payload = {
+            "source_id": "agent_tamper",
+            "provider": "openai",
+            "tool_name": "db_query",
+            "tool_args": {"sql": "SELECT 1"},
+            "org_id": "attacker_org",
+        }
+        response = client.post("/v1/events/action", headers=AUTH_HEADERS, json=payload)
+        assert response.status_code == 200
+        event_id = response.json()["event_id"]
+
+        # Check stored event in fake_redis
+        stored_raw = None
+        for k, v in fake_redis.store.items():
+            if "action_event" in k and event_id in k:
+                stored_raw = v
+                break
+        assert stored_raw is not None
+        stored_dict = json.loads(stored_raw)
+        assert stored_dict["org_id"] != "attacker_org"
+        assert stored_dict["org_id"] == "default-org"
+
+
+def test_ingest_rejects_tampered_raw_payload_hash():
+    """Verify that submitting a tampered raw_payload_hash returns HTTP 422."""
+    payload = {
+        "source_id": "agent_tamper",
+        "provider": "openai",
+        "tool_name": "db_query",
+        "tool_args": {"sql": "SELECT 1"},
+        "raw_payload_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    }
+    response = client.post("/v1/events/action", headers=AUTH_HEADERS, json=payload)
+    assert response.status_code == 422
+    assert "Payload integrity hash mismatch" in response.json()["detail"]
+
+
+def test_duplicate_returns_original_persisted_event_id():
+    """Verify that duplicate submissions return the original stored event ID rather than retry ID."""
+    fake_redis = FakeActionRedis()
+    with patch("services.ingest.app.redis_client", fake_redis):
+        payload1 = {
+            "source_id": "agent_dup",
+            "call_id": "call_dup_123",
+            "provider": "openai",
+            "tool_name": "db_query",
+            "tool_args": {"sql": "SELECT 1"},
+        }
+        res1 = client.post("/v1/events/action", headers=AUTH_HEADERS, json=payload1)
+        assert res1.status_code == 200
+        orig_id = res1.json()["event_id"]
+
+        # Second submission with same call_id and different event_id
+        payload2 = {
+            "source_id": "agent_dup",
+            "call_id": "call_dup_123",
+            "provider": "openai",
+            "tool_name": "db_query",
+            "tool_args": {"sql": "SELECT 1"},
+            "event_id": "new_retry_id_9999",
+        }
+        res2 = client.post("/v1/events/action", headers=AUTH_HEADERS, json=payload2)
+        assert res2.status_code == 200
+        assert res2.headers["X-Tenet-Audit"] == "duplicate"
+        assert res2.json()["event_id"] == orig_id
+        assert res2.json()["event_id"] != "new_retry_id_9999"
+
+
+def test_get_action_event_redis_error_returns_503():
+    """Verify that Redis connection/timeout error on retrieval returns HTTP 503 instead of 404."""
+    import redis.exceptions
+
+    class ErrorRedis:
+        async def incr(self, key):
+            return 1
+
+        async def expire(self, key, ttl):
+            return True
+
+        async def get(self, key):
+            raise redis.exceptions.ConnectionError("Redis connection refused")
+
+    with patch("services.ingest.app.redis_client", ErrorRedis()):
+        response = client.get("/v1/events/action/some_event_id", headers=AUTH_HEADERS)
+        assert response.status_code == 503
+        assert "Service degraded - event store unavailable" in response.json()["detail"]
+
+
+def test_get_action_event_tenant_scoped_storage_lookup():
+    """Verify retrieval works with tenant-scoped storage key."""
+    fake_redis = FakeActionRedis()
+    event_payload = {
+        "event_id": "act_scoped_123",
+        "org_id": "default-org",
+        "source_id": "agent-alpha",
+        "provider": "openai",
+        "tool_name": "scoped_tool",
+        "tool_args": {},
+        "status": "queued",
+    }
+    fake_redis.store[f"{CLUSTER_TAG}:action_event:default-org:act_scoped_123"] = json.dumps(event_payload)
+
+    with patch("services.ingest.app.redis_client", fake_redis):
+        response = client.get("/v1/events/action/act_scoped_123", headers=AUTH_HEADERS)
+        assert response.status_code == 200
+        assert response.json()["event_id"] == "act_scoped_123"
+        assert response.json()["tool_name"] == "scoped_tool"

@@ -25,8 +25,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from services.utils.logging_config import setup_logging
 from services.security import SecurityManager
-from services.utils.metrics import ACTION_OBSERVED_COUNT, ACTION_OLDEST_EVENT_AGE, ACTION_OVERFLOW_DRAINED, ACTION_OVERFLOW_DRAIN_FAILURES, PrometheusMiddleware, increment_detection
-from services.utils.env_validator import non_negative_float, port, probability, validate_env_vars
+from services.utils.metrics import ACTION_OBSERVED_COUNT, ACTION_OLDEST_EVENT_AGE, ACTION_OVERFLOW_DRAINED, ACTION_OVERFLOW_DRAIN_FAILURES, ACTION_QUEUE_DEPTH, PrometheusMiddleware, increment_detection
+from services.utils.env_validator import non_negative_float, port, positive_int, probability, validate_env_vars
 from prometheus_client import make_asgi_app
 logger = setup_logging(__name__)
 
@@ -41,12 +41,16 @@ _ENV_DEFAULTS = {
     "MODEL_PATH": "./models/trained",
     "PROMPT_INJECTION_THRESHOLD": 0.75,
     "SHUTDOWN_TIMEOUT": 10.0,
+    "TENET_ACTION_QUEUE_MAX_CAPACITY": 25000,
+    "TENET_OVERFLOW_DRAIN_INTERVAL": 50,
 }
 _ENV_TYPES = {
     "REDIS_PORT": port,
     "API_PORT": port,
     "PROMPT_INJECTION_THRESHOLD": probability,
     "SHUTDOWN_TIMEOUT": non_negative_float,
+    "TENET_ACTION_QUEUE_MAX_CAPACITY": positive_int,
+    "TENET_OVERFLOW_DRAIN_INTERVAL": positive_int,
 }
 
 REDIS_HOST = _ENV_DEFAULTS["REDIS_HOST"]
@@ -56,6 +60,8 @@ API_PORT = _ENV_DEFAULTS["API_PORT"]
 MODEL_PATH = _ENV_DEFAULTS["MODEL_PATH"]
 PROMPT_INJECTION_THRESHOLD = _ENV_DEFAULTS["PROMPT_INJECTION_THRESHOLD"]
 SHUTDOWN_TIMEOUT = _ENV_DEFAULTS["SHUTDOWN_TIMEOUT"]
+MAX_PRIMARY_CAPACITY = _ENV_DEFAULTS["TENET_ACTION_QUEUE_MAX_CAPACITY"]
+OVERFLOW_DRAIN_EVENT_INTERVAL = _ENV_DEFAULTS["TENET_OVERFLOW_DRAIN_INTERVAL"]
 
 
 def load_config() -> None:
@@ -66,6 +72,7 @@ def load_config() -> None:
     """
     global REDIS_HOST, REDIS_PORT, API_HOST, API_PORT, MODEL_PATH
     global PROMPT_INJECTION_THRESHOLD, SHUTDOWN_TIMEOUT
+    global MAX_PRIMARY_CAPACITY, OVERFLOW_DRAIN_EVENT_INTERVAL
 
     config = validate_env_vars([], optional_vars=_ENV_DEFAULTS, types=_ENV_TYPES)
 
@@ -76,6 +83,8 @@ def load_config() -> None:
     MODEL_PATH = config["MODEL_PATH"]
     PROMPT_INJECTION_THRESHOLD = config["PROMPT_INJECTION_THRESHOLD"]
     SHUTDOWN_TIMEOUT = config["SHUTDOWN_TIMEOUT"]
+    MAX_PRIMARY_CAPACITY = config["TENET_ACTION_QUEUE_MAX_CAPACITY"]
+    OVERFLOW_DRAIN_EVENT_INTERVAL = config["TENET_OVERFLOW_DRAIN_INTERVAL"]
 
 # FastAPI app
 app = FastAPI(
@@ -860,7 +869,36 @@ async def process_event_queue():
 
 
 CLUSTER_TAG = "{tenet}"
-MAX_PRIMARY_CAPACITY = int(os.getenv("TENET_ACTION_QUEUE_MAX_CAPACITY", "25000"))
+
+async def _get_or_reconnect_redis() -> Optional[redis.Redis]:
+    global redis_client
+    if redis_client:
+        try:
+            await redis_client.ping()
+            return redis_client
+        except Exception:  # noqa: BLE001
+            try:
+                await redis_client.close()
+            except Exception:  # noqa: BLE001, S110
+                pass
+            redis_client = None
+
+    try:
+        client = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            decode_responses=True,
+            socket_connect_timeout=2.0,
+            socket_timeout=2.0,
+        )
+        await client.ping()
+        redis_client = client
+        logger.info("Reconnected to Redis at %s:%s", REDIS_HOST, REDIS_PORT)
+        return redis_client
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Redis reconnection attempt failed: %s", exc)
+        return None
+
 
 LUA_DRAIN_OVERFLOW_SCRIPT = """
 local primary_len = redis.call('LLEN', KEYS[2])
@@ -875,18 +913,24 @@ return 0
 
 async def _drain_overflow_queue_step() -> int:
     """Atomically transfer events from overflow to primary queue if primary has capacity."""
-    global redis_client
     if not redis_client:
         return 0
     try:
         keys = [f"{CLUSTER_TAG}:events:action:overflow", f"{CLUSTER_TAG}:events:action:queue"]
         args = [MAX_PRIMARY_CAPACITY]
         res = await redis_client.eval(LUA_DRAIN_OVERFLOW_SCRIPT, len(keys), *keys, *args)
+        try:
+            p_len = await redis_client.llen(f"{CLUSTER_TAG}:events:action:queue")
+            o_len = await redis_client.llen(f"{CLUSTER_TAG}:events:action:overflow")
+            ACTION_QUEUE_DEPTH.labels(queue="primary").set(float(p_len))
+            ACTION_QUEUE_DEPTH.labels(queue="overflow").set(float(o_len))
+        except Exception:  # noqa: BLE001, S110
+            pass
         if res == 1:
             ACTION_OVERFLOW_DRAINED.inc()
             return 1
         return 0
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         ACTION_OVERFLOW_DRAIN_FAILURES.inc()
         logger.warning("Failed to drain overflow queue: %s", exc)
         return 0
@@ -914,47 +958,69 @@ async def _process_single_action_event(event_data: str) -> None:
         return
 
     logger.info("Processing action event: %s (tool: %s)", event_id, event.get("tool_name"))
-    tool_name = str(event.get("tool_name", "unknown"))
+    tool_name = str(event.get("tool_name", "unknown"))[:64]
     provider = str(event.get("provider", "unknown"))
+    bounded_provider = provider if provider in {"openai", "anthropic", "gemini", "mcp"} else "other"
 
     event["verdict"] = "observed"
     event["observed_at"] = datetime.now(timezone.utc).isoformat()
     event["status"] = "observed"
 
-    timestamp_str = event.get("timestamp")
-    if timestamp_str and isinstance(timestamp_str, str):
-        try:
-            created_at = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-            age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
-            ACTION_OLDEST_EVENT_AGE.set(max(0.0, age_seconds))
-        except Exception:
-            pass
-
+    persisted = False
     if redis_client:
         try:
-            await redis_client.set(f"{CLUSTER_TAG}:action_event:{event_id}", json.dumps(event), ex=86400)
-        except Exception:
+            org_id = event.get("org_id")
+            event_key = f"{CLUSTER_TAG}:action_event:{org_id}:{event_id}" if org_id else f"{CLUSTER_TAG}:action_event:{event_id}"
+            await redis_client.set(event_key, json.dumps(event), ex=86400)
+            persisted = True
+        except Exception:  # noqa: BLE001
             logger.exception("Failed to update action event %s in Redis", event_id)
+            try:
+                await redis_client.rpush(f"{CLUSTER_TAG}:events:action:queue", event_data)
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to requeue action event %s", event_id)
 
-    ACTION_OBSERVED_COUNT.labels(tool_name=tool_name, provider=provider).inc()
+    if persisted:
+        ACTION_OBSERVED_COUNT.labels(tool_name=tool_name, provider=bounded_provider).inc()
 
-
-OVERFLOW_DRAIN_EVENT_INTERVAL = int(os.getenv("TENET_OVERFLOW_DRAIN_INTERVAL", "50"))
 
 async def process_action_event_queue():
     """Background task to process action events from the Redis action queue."""
-    global stop_event, redis_client
     events_since_drain_attempt = 0
 
-    while not stop_event.is_set():
+    while stop_event is not None and not stop_event.is_set():
         try:
             if not redis_client:
-                await _wait_with_timeout(5.0)
-                continue
+                r_client = await _get_or_reconnect_redis()
+                if not r_client:
+                    await _wait_with_timeout(5.0)
+                    continue
+
+            # Measure oldest event waiting in the queues
+            try:
+                oldest_raw = await redis_client.lindex(f"{CLUSTER_TAG}:events:action:queue", -1)
+                if not oldest_raw:
+                    oldest_raw = await redis_client.lindex(f"{CLUSTER_TAG}:events:action:overflow", -1)
+                if oldest_raw:
+                    oldest_evt = json.loads(oldest_raw)
+                    ts_str = oldest_evt.get("timestamp")
+                    if ts_str:
+                        created_at = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+                        age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
+                        ACTION_OLDEST_EVENT_AGE.set(max(0.0, age_seconds))
+                else:
+                    ACTION_OLDEST_EVENT_AGE.set(0.0)
+            except Exception:  # noqa: BLE001, S110
+                pass
 
             event_json = await redis_client.rpop(f"{CLUSTER_TAG}:events:action:queue")
             if event_json:
                 await _process_single_action_event(event_json)
+                try:
+                    p_len = await redis_client.llen(f"{CLUSTER_TAG}:events:action:queue")
+                    ACTION_QUEUE_DEPTH.labels(queue="primary").set(float(p_len))
+                except Exception:  # noqa: BLE001, S110
+                    pass
                 events_since_drain_attempt += 1
                 if events_since_drain_attempt >= OVERFLOW_DRAIN_EVENT_INTERVAL:
                     events_since_drain_attempt = 0
@@ -964,7 +1030,7 @@ async def process_action_event_queue():
                 drained = await _drain_overflow_queue_step()
                 if not drained:
                     await _wait_with_timeout(1.0)
-        except Exception:
+        except Exception:  # noqa: BLE001
             logger.exception("Action queue processing error")
             await _wait_with_timeout(5.0)
 

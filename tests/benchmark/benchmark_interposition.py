@@ -83,7 +83,15 @@ def main():
                             "type": "function",
                             "function": {
                                 "name": "get_weather",
-                                "arguments": '{"location": "San Francisco, CA", "unit": "fahrenheit"}',
+                                "arguments": json.dumps({
+                                    "location": "San Francisco, CA",
+                                    "unit": "fahrenheit",
+                                    "include_forecast": True,
+                                    "forecast_days": 5,
+                                    "historical_comparison": True,
+                                    "metrics": ["temperature", "humidity", "wind_speed", "precipitation_probability", "uv_index"],
+                                    "notes": "Benchmarking payload size calibration targeting approximately five hundred bytes.",
+                                }),
                             },
                         }
                     ]
@@ -112,7 +120,7 @@ def main():
                                 }),
                             },
                         }
-                        for i in range(4)
+                        for i in range(10)
                     ]
                 }
             }
@@ -179,7 +187,7 @@ def main():
 
     benchmarks = [
         ("OpenAI Extraction (Small ~500B)", lambda: extract_openai_tools(small_openai, "agent-1")),
-        ("OpenAI Extraction (Med ~4KB, 4 calls)", lambda: extract_openai_tools(medium_openai, "agent-1")),
+        ("OpenAI Extraction (Med ~4KB, 10 calls)", lambda: extract_openai_tools(medium_openai, "agent-1")),
         ("Anthropic Extraction", lambda: extract_anthropic_tools(anthropic_payload, "agent-1")),
         ("Gemini Extraction", lambda: extract_gemini_tools(gemini_payload, "agent-1")),
         ("MCP tools/call Extraction", lambda: extract_mcp_tools(mcp_payload, "agent-1")),

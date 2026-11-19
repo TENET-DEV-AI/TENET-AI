@@ -57,6 +57,8 @@ _ENV_DEFAULTS = {
     "CB_FAILURE_THRESHOLD": 3,
     "CB_RECOVERY_TIMEOUT_S": 30.0,
     "CB_HALF_OPEN_MAX_CALLS": 1,
+    "TENET_ACTION_QUEUE_MAX_CAPACITY": 25000,
+    "TENET_ACTION_OVERFLOW_MAX_CAPACITY": 5000,
 }
 _ENV_TYPES = {
     "REDIS_PORT": port,
@@ -65,6 +67,8 @@ _ENV_TYPES = {
     "CB_FAILURE_THRESHOLD": positive_int,
     "CB_RECOVERY_TIMEOUT_S": positive_float,
     "CB_HALF_OPEN_MAX_CALLS": positive_int,
+    "TENET_ACTION_QUEUE_MAX_CAPACITY": positive_int,
+    "TENET_ACTION_OVERFLOW_MAX_CAPACITY": positive_int,
 }
 
 REDIS_HOST = _ENV_DEFAULTS["REDIS_HOST"]
@@ -284,6 +288,7 @@ def load_config() -> None:
     """
     global REDIS_HOST, REDIS_PORT, REDIS_TIMEOUT_S, API_HOST, API_PORT
     global CB_FAILURE_THRESHOLD, CB_RECOVERY_TIMEOUT_S, CB_HALF_OPEN_MAX_CALLS
+    global MAX_PRIMARY_CAPACITY, MAX_OVERFLOW_CAPACITY
 
     config = validate_env_vars([], optional_vars=_ENV_DEFAULTS, types=_ENV_TYPES)
 
@@ -295,6 +300,8 @@ def load_config() -> None:
     CB_FAILURE_THRESHOLD = config["CB_FAILURE_THRESHOLD"]
     CB_RECOVERY_TIMEOUT_S = config["CB_RECOVERY_TIMEOUT_S"]
     CB_HALF_OPEN_MAX_CALLS = config["CB_HALF_OPEN_MAX_CALLS"]
+    MAX_PRIMARY_CAPACITY = config["TENET_ACTION_QUEUE_MAX_CAPACITY"]
+    MAX_OVERFLOW_CAPACITY = config["TENET_ACTION_OVERFLOW_MAX_CAPACITY"]
 
     # redis_cb was built at import time with the defaults.
     redis_cb.failure_threshold = CB_FAILURE_THRESHOLD
@@ -459,8 +466,8 @@ async def ingest_llm_event(request: LLMEventRequest, x_api_key: Optional[str] = 
 
 
 CLUSTER_TAG = "{tenet}"
-MAX_PRIMARY_CAPACITY = int(os.getenv("TENET_ACTION_QUEUE_MAX_CAPACITY", "25000"))
-MAX_OVERFLOW_CAPACITY = int(os.getenv("TENET_ACTION_OVERFLOW_MAX_CAPACITY", "5000"))
+MAX_PRIMARY_CAPACITY = _ENV_DEFAULTS["TENET_ACTION_QUEUE_MAX_CAPACITY"]
+MAX_OVERFLOW_CAPACITY = _ENV_DEFAULTS["TENET_ACTION_OVERFLOW_MAX_CAPACITY"]
 
 LUA_ACTION_INGEST_SCRIPT = """
 local dedup_key = KEYS[3]
@@ -480,8 +487,11 @@ local dedup_enabled = tonumber(ARGV[7])
 if dedup_enabled == 1 then
     local existing_event_id = redis.call('GET', dedup_key)
     if existing_event_id then
-        local orig_key = '{tenet}:action_event:' .. existing_event_id
+        local orig_prefix = ARGV[8] or '{tenet}:action_event:'
+        local orig_key = orig_prefix .. existing_event_id
         if redis.call('EXISTS', orig_key) == 1 then
+            return {'DUPLICATE_PERSISTED', existing_event_id}
+        elseif redis.call('EXISTS', '{tenet}:action_event:' .. existing_event_id) == 1 then
             return {'DUPLICATE_PERSISTED', existing_event_id}
         else
             return {'DUPLICATE_EVICTED', existing_event_id}
@@ -542,17 +552,21 @@ async def ingest_action_event(
 ):
     auth = await security.require_auth(x_api_key, required_permission="ingest")
 
+    # Verify payload integrity hash
+    if not event.verify_hash():
+        raise HTTPException(status_code=422, detail="Payload integrity hash mismatch")
+
     event_dict = event.model_dump()
-    if not event_dict.get("org_id"):
-        event_dict["org_id"] = auth.org_id
+    event_dict["org_id"] = auth.org_id
 
     payload_json = json.dumps(event_dict)
 
-    event_key = f"{CLUSTER_TAG}:action_event:{event.event_id}"
+    event_key = f"{CLUSTER_TAG}:action_event:{auth.org_id}:{event.event_id}"
     primary_queue = f"{CLUSTER_TAG}:events:action:queue"
     overflow_queue = f"{CLUSTER_TAG}:events:action:overflow"
     if event.call_id:
-        dedup_key = f"{CLUSTER_TAG}:action_dedup:{auth.org_id}:{event.source_id}:{event.call_id}"
+        session_part = f":{event.session_id}" if event.session_id else ""
+        dedup_key = f"{CLUSTER_TAG}:action_dedup:{auth.org_id}:{event.source_id}:{event.provider}{session_part}:{event.call_id}"
         dedup_enabled = 1
     else:
         dedup_key = f"{CLUSTER_TAG}:action_dedup:disabled"
@@ -567,6 +581,7 @@ async def ingest_action_event(
         MAX_PRIMARY_CAPACITY,
         MAX_OVERFLOW_CAPACITY,
         dedup_enabled,
+        f"{CLUSTER_TAG}:action_event:{auth.org_id}:",
     ]
 
     res = None
@@ -612,10 +627,10 @@ async def ingest_action_event(
                 action="ingest_action_event",
                 result="duplicate_suppressed",
                 context=auth,
-                metadata={"event_id": event.event_id, "tool_name": event.tool_name, "provider": event.provider, "degraded": False},
+                metadata={"event_id": status_val, "tool_name": event.tool_name, "provider": event.provider, "degraded": False},
             )
             return ActionEventResponse(
-                event_id=event.event_id,
+                event_id=status_val,
                 timestamp=event.timestamp,
                 tool_name=event.tool_name,
                 status="duplicate_suppressed",
@@ -635,7 +650,7 @@ async def ingest_action_event(
             ACTION_DUPLICATE_COUNT.labels(service="ingest", provider=event.provider).inc()
             logger.warning("Duplicate action event with evicted storage record: %s:%s", event.source_id, event.call_id)
             return ActionEventResponse(
-                event_id=event.event_id,
+                event_id=status_val,
                 timestamp=event.timestamp,
                 tool_name=event.tool_name,
                 status="duplicate_evicted",
@@ -770,25 +785,42 @@ async def ingest_action_event(
 )
 async def get_action_event(event_id: str, x_api_key: Optional[str] = Security(api_key_scheme)):
     auth = await security.require_auth(x_api_key, required_permission="read")
-    if not event_id.strip():
+    clean_id = event_id.strip()
+    if not clean_id:
         raise HTTPException(status_code=422, detail="event_id must not be empty")
 
     if redis_cb.state == CircuitState.OPEN or not redis_client:
         raise HTTPException(status_code=503, detail="Service degraded - event store unavailable")
 
+    scoped_key = f"{CLUSTER_TAG}:action_event:{auth.org_id}:{clean_id}"
+    legacy_key = f"{CLUSTER_TAG}:action_event:{clean_id}"
+
     try:
-        data = await redis_call(redis_client.get(f"{CLUSTER_TAG}:action_event:{event_id}"))
+        data = await asyncio.wait_for(redis_client.get(scoped_key), timeout=REDIS_TIMEOUT_S)
         if not data:
-            raise HTTPException(status_code=404, detail="Action event not found")
-        parsed = json.loads(data)
-        if parsed.get("org_id") != auth.org_id:
-            raise HTTPException(status_code=404, detail="Action event not found")
-        return parsed
-    except HTTPException:
-        raise
+            data = await asyncio.wait_for(redis_client.get(legacy_key), timeout=REDIS_TIMEOUT_S)
+        await redis_cb.record_success()
+    except (asyncio.TimeoutError, redis.RedisError) as exc:
+        await redis_cb.record_failure()
+        logger.warning("Redis failure while retrieving action event %s: %s", clean_id, exc)
+        raise HTTPException(status_code=503, detail="Service degraded - event store unavailable") from exc
     except Exception as exc:  # noqa: BLE001
-        logger.error("Failed to retrieve action event %s: %s", event_id, exc)
-        raise HTTPException(status_code=500, detail="Internal server error") from exc
+        await redis_cb.record_failure()
+        logger.error("Unexpected failure while retrieving action event %s: %s", clean_id, exc)
+        raise HTTPException(status_code=503, detail="Service degraded - event store unavailable") from exc
+
+    if not data:
+        raise HTTPException(status_code=404, detail="Action event not found")
+
+    try:
+        parsed = json.loads(data)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Corrupted event data") from exc
+
+    if parsed.get("org_id") != auth.org_id:
+        raise HTTPException(status_code=404, detail="Action event not found")
+
+    return parsed
 
 
 def quick_heuristic_check(prompt: str) -> tuple[bool, float, str, str]:

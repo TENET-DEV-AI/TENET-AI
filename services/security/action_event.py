@@ -21,7 +21,12 @@ SENSITIVE_KEYS: set[str] = {
 SENSITIVE_VALUE_REGEXES = [
     re.compile(r"Bearer\s+[A-Za-z0-9\-\._~\+\/]+=*", re.IGNORECASE),
     re.compile(r"AKIA[0-9A-Z]{16}"),  # AWS Access Key ID
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),  # PEM private key header
+    # Match full PEM private key block across multiple lines
+    re.compile(r"-----BEGIN [A-Z0-9_-]* ?PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9_-]* ?PRIVATE KEY-----"),
+    # Match sensitive key-value pairs in strings (e.g. malformed JSON or query parameters)
+    re.compile(
+        r"""(?i)(['"]?(?:password|token|secret|api[_-]?key|auth|private[_-]?key|access[_-]?token|refresh[_-]?token|authorization|credentials|webhook[_-]?url)['"]?\s*[:=]\s*['"]?)([^'"\s,}{]+)(['"]?)"""
+    ),
 ]
 
 
@@ -51,7 +56,9 @@ def sanitize_value(val: Any) -> Any:
         sanitized = {}
         for k, v in val.items():
             k_str = str(k).lower()
-            if any(sub in k_str for sub in SENSITIVE_KEYS):
+            k_norm = k_str.replace("-", "_")
+            k_clean = k_norm.replace("_", "").replace(" ", "")
+            if any(sub in k_str or sub in k_norm or sub.replace("_", "") in k_clean for sub in SENSITIVE_KEYS):
                 sanitized[k] = "[REDACTED]"
             else:
                 sanitized[k] = sanitize_value(v)
@@ -63,7 +70,7 @@ def sanitize_value(val: Any) -> Any:
     if isinstance(val, str):
         masked = val
         for pattern in SENSITIVE_VALUE_REGEXES:
-            masked = pattern.sub("[REDACTED]", masked)
+            masked = pattern.sub(r"\1[REDACTED]\3" if pattern.groups == 3 else "[REDACTED]", masked)
         return masked
 
     return val
@@ -103,6 +110,13 @@ class ActionEvent(BaseModel):
     @classmethod
     def sanitize_and_hash(cls, data: Any) -> Any:
         if isinstance(data, dict):
+            # Enforce observe_only is always True (fail-open observation contract)
+            data["observe_only"] = True
+
+            # Normalize event_id if present
+            if data.get("event_id") and isinstance(data["event_id"], str):
+                data["event_id"] = data["event_id"].strip()
+
             # 1. Sanitize tool_args
             raw_args = data.get("tool_args") or {}
             sanitized_args = sanitize_value(raw_args)

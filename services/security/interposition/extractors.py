@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Any
 
-from services.security.action_event import ActionEvent
+from services.security.action_event import ActionEvent, sanitize_value
 
 logger = logging.getLogger(__name__)
 
@@ -70,14 +70,18 @@ def extract_openai_tool_calls(
                         else:
                             tool_args = {"_raw": parsed}
                     except (json.JSONDecodeError, TypeError, ValueError):
-                        tool_args = {"_raw": raw_args}
+                        tool_args = {"_raw": sanitize_value(raw_args)}
                         parse_error = True
                 else:
-                    tool_args = {}
+                    tool_args = {"_raw": raw_args}
+                    parse_error = True
             elif isinstance(raw_args, dict):
                 tool_args = raw_args
-            elif raw_args is not None:
-                tool_args = {"_raw": str(raw_args)}
+            elif raw_args is None:
+                tool_args = {}
+            else:
+                tool_args = {"_raw": sanitize_value(str(raw_args))}
+                parse_error = True
 
             events.append(
                 ActionEvent(
@@ -112,7 +116,7 @@ def extract_anthropic_tool_calls(
         if b_dict.get("type") == "tool_use":
             tool_name = str(b_dict.get("name") or "unknown_tool")
             call_id = b_dict.get("id") or None
-            raw_input = b_dict.get("input") or {}
+            raw_input = b_dict.get("input")
 
             tool_args: dict[str, Any] = {}
             parse_error = False
@@ -120,14 +124,22 @@ def extract_anthropic_tool_calls(
             if isinstance(raw_input, dict):
                 tool_args = raw_input
             elif isinstance(raw_input, str):
-                try:
-                    parsed = json.loads(raw_input)
-                    tool_args = parsed if isinstance(parsed, dict) else {"_raw": parsed}
-                except (json.JSONDecodeError, TypeError, ValueError):
+                raw_trimmed = raw_input.strip()
+                if raw_trimmed:
+                    try:
+                        parsed = json.loads(raw_trimmed)
+                        tool_args = parsed if isinstance(parsed, dict) else {"_raw": parsed}
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        tool_args = {"_raw": sanitize_value(raw_input)}
+                        parse_error = True
+                else:
                     tool_args = {"_raw": raw_input}
                     parse_error = True
-            elif raw_input is not None:
-                tool_args = {"_raw": str(raw_input)}
+            elif raw_input is None:
+                tool_args = {}
+            else:
+                tool_args = {"_raw": sanitize_value(str(raw_input))}
+                parse_error = True
 
             events.append(
                 ActionEvent(
@@ -154,7 +166,7 @@ def extract_gemini_tool_calls(
 
     Idempotency & Deduplication Guarantees:
     - Tier 1: If a function call has an explicit provider 'id' or 'call_id', it is preserved.
-    - Tier 2: If a provider response identifier is present (data.response_id, data.id,
+    - Tier 2: If a provider response identifier is present (data.responseId, data.response_id, data.id,
       metadata.request_id, or turn_id argument), the call_id is derived deterministically as:
       `call_gemini_{sha256(response_id:cand_idx:part_idx:tool_name)[:16]}`.
       This preserves identity across retries of the same turn while ensuring separate
@@ -169,13 +181,15 @@ def extract_gemini_tool_calls(
     if not isinstance(data, dict):
         return []
 
-    # Extract turn / response identifier
+    # Extract turn / response identifier (supporting both camelCase responseId and snake_case response_id)
     response_id = (
         turn_id
+        or data.get("responseId")
         or data.get("response_id")
         or data.get("id")
         or data.get("turn_id")
         or (data.get("metadata") or {}).get("request_id")
+        or getattr(payload, "responseId", None)
         or getattr(payload, "response_id", None)
         or getattr(payload, "id", None)
     )
@@ -198,7 +212,7 @@ def extract_gemini_tool_calls(
             if fn_call and isinstance(fn_call, dict):
                 fn_dict = _to_dict(fn_call)
                 tool_name = str(fn_dict.get("name") or "unknown_tool")
-                raw_args = fn_dict.get("args") or {}
+                raw_args = fn_dict.get("args")
 
                 tool_args: dict[str, Any] = {}
                 parse_error = False
@@ -206,14 +220,22 @@ def extract_gemini_tool_calls(
                 if isinstance(raw_args, dict):
                     tool_args = raw_args
                 elif isinstance(raw_args, str):
-                    try:
-                        parsed = json.loads(raw_args)
-                        tool_args = parsed if isinstance(parsed, dict) else {"_raw": parsed}
-                    except (json.JSONDecodeError, TypeError, ValueError):
+                    raw_trimmed = raw_args.strip()
+                    if raw_trimmed:
+                        try:
+                            parsed = json.loads(raw_trimmed)
+                            tool_args = parsed if isinstance(parsed, dict) else {"_raw": parsed}
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            tool_args = {"_raw": sanitize_value(raw_args)}
+                            parse_error = True
+                    else:
                         tool_args = {"_raw": raw_args}
                         parse_error = True
-                elif raw_args is not None:
-                    tool_args = {"_raw": str(raw_args)}
+                elif raw_args is None:
+                    tool_args = {}
+                else:
+                    tool_args = {"_raw": sanitize_value(str(raw_args))}
+                    parse_error = True
 
                 # Identity Derivation Hierarchy:
                 explicit_id = fn_dict.get("id") or fn_dict.get("call_id") or p_dict.get("id")
@@ -262,7 +284,7 @@ def extract_mcp_tool_calls(
     params_dict = _to_dict(params)
 
     tool_name = str(params_dict.get("name") or "unknown_tool")
-    raw_args = params_dict.get("arguments") or {}
+    raw_args = params_dict.get("arguments")
     call_id = str(data.get("id")) if data.get("id") is not None else None
 
     tool_args: dict[str, Any] = {}
@@ -271,14 +293,22 @@ def extract_mcp_tool_calls(
     if isinstance(raw_args, dict):
         tool_args = raw_args
     elif isinstance(raw_args, str):
-        try:
-            parsed = json.loads(raw_args)
-            tool_args = parsed if isinstance(parsed, dict) else {"_raw": parsed}
-        except (json.JSONDecodeError, TypeError, ValueError):
+        raw_trimmed = raw_args.strip()
+        if raw_trimmed:
+            try:
+                parsed = json.loads(raw_trimmed)
+                tool_args = parsed if isinstance(parsed, dict) else {"_raw": parsed}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                tool_args = {"_raw": sanitize_value(raw_args)}
+                parse_error = True
+        else:
             tool_args = {"_raw": raw_args}
             parse_error = True
-    elif raw_args is not None:
-        tool_args = {"_raw": str(raw_args)}
+    elif raw_args is None:
+        tool_args = {}
+    else:
+        tool_args = {"_raw": sanitize_value(str(raw_args))}
+        parse_error = True
 
     return [
         ActionEvent(

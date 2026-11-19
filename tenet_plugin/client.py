@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import requests
-
 from services.security.action_event import ActionEvent
 from services.security.interposition.extractors import extract_tool_calls
 
@@ -115,7 +114,12 @@ class TenetSecurityPlugin:
         if isinstance(action_event, ActionEvent):
             payload = action_event.model_dump()
         else:
-            payload = dict(action_event)
+            raw_dict = dict(action_event)
+            raw_dict.setdefault("source_id", self.source_id)
+            if self.source_type and "source_type" not in raw_dict:
+                raw_dict["source_type"] = self.source_type
+            normalized = ActionEvent.model_validate(raw_dict)
+            payload = normalized.model_dump()
 
         payload.setdefault("source_id", self.source_id)
         payload.setdefault("source_type", self.source_type)
@@ -203,13 +207,15 @@ class TenetSecurityPlugin:
         if asyncio.iscoroutinefunction(original_call_tool):
             async def wrapped_call_tool(name: str, arguments: dict[str, Any] | None = None, *args: Any, **kwargs: Any) -> Any:
                 try:
-                    mcp_request = {
+                    mcp_request: dict[str, Any] = {
                         "jsonrpc": "2.0",
-                        "id": kwargs.get("call_id") or "mcp_call",
                         "method": "tools/call",
                         "params": {"name": name, "arguments": arguments or {}},
                     }
-                    plugin.intercept_response_actions(mcp_request, provider="mcp")
+                    call_id = kwargs.get("call_id")
+                    if call_id is not None:
+                        mcp_request["id"] = call_id
+                    await asyncio.to_thread(plugin.intercept_response_actions, mcp_request, "mcp")
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("MCP action interception telemetry error (continuing fail-open): %s", exc)
                 return await original_call_tool(name, arguments, *args, **kwargs)
@@ -217,12 +223,14 @@ class TenetSecurityPlugin:
         else:
             def wrapped_call_tool(name: str, arguments: dict[str, Any] | None = None, *args: Any, **kwargs: Any) -> Any:
                 try:
-                    mcp_request = {
+                    mcp_request: dict[str, Any] = {
                         "jsonrpc": "2.0",
-                        "id": kwargs.get("call_id") or "mcp_call",
                         "method": "tools/call",
                         "params": {"name": name, "arguments": arguments or {}},
                     }
+                    call_id = kwargs.get("call_id")
+                    if call_id is not None:
+                        mcp_request["id"] = call_id
                     plugin.intercept_response_actions(mcp_request, provider="mcp")
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("MCP action interception telemetry error (continuing fail-open): %s", exc)

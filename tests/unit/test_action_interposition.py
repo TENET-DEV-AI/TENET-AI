@@ -13,7 +13,6 @@ Covers:
 
 import pytest
 from pydantic import ValidationError
-
 from services.security.action_event import (
     ActionEvent,
     canonical_json,
@@ -32,6 +31,7 @@ from tenet_plugin.client import TenetSecurityPlugin
 # ---------------------------------------------------------------------------
 # 1. OpenAI Extraction Tests
 # ---------------------------------------------------------------------------
+
 
 def test_openai_extraction_valid():
     payload = {
@@ -104,6 +104,7 @@ def test_openai_extraction_malformed_json():
 # 2. Anthropic Extraction Tests
 # ---------------------------------------------------------------------------
 
+
 def test_anthropic_extraction_valid():
     payload = {
         "id": "msg_01",
@@ -153,6 +154,7 @@ def test_anthropic_extraction_malformed():
 # 3. Gemini Extraction Tests
 # ---------------------------------------------------------------------------
 
+
 def test_gemini_extraction_valid():
     payload = {
         "response_id": "gemini-turn-resp-001",
@@ -169,7 +171,7 @@ def test_gemini_extraction_valid():
                     ]
                 }
             }
-        ]
+        ],
     }
 
     events = extract_gemini_tools(payload, source_id="gemini-bot")
@@ -199,7 +201,7 @@ def test_gemini_retransmission_same_turn_identical_id():
                     ]
                 }
             }
-        ]
+        ],
     }
 
     events1 = extract_gemini_tools(payload, source_id="bot")
@@ -212,11 +214,23 @@ def test_gemini_sequential_turns_distinct_ids():
     """Verify that separate sequential turns with identical arguments produce distinct call_ids."""
     payload_turn_1 = {
         "response_id": "turn_1",
-        "candidates": [{"content": {"parts": [{"functionCall": {"name": "poll", "args": {"id": 1}}}]}}]
+        "candidates": [
+            {
+                "content": {
+                    "parts": [{"functionCall": {"name": "poll", "args": {"id": 1}}}]
+                }
+            }
+        ],
     }
     payload_turn_2 = {
         "response_id": "turn_2",
-        "candidates": [{"content": {"parts": [{"functionCall": {"name": "poll", "args": {"id": 1}}}]}}]
+        "candidates": [
+            {
+                "content": {
+                    "parts": [{"functionCall": {"name": "poll", "args": {"id": 1}}}]
+                }
+            }
+        ],
     }
 
     events1 = extract_gemini_tools(payload_turn_1, source_id="bot")
@@ -277,6 +291,7 @@ def test_gemini_explicit_id_preserved():
 # 4. MCP Extraction Tests
 # ---------------------------------------------------------------------------
 
+
 def test_mcp_extraction_tools_call():
     payload = {
         "jsonrpc": "2.0",
@@ -313,6 +328,7 @@ def test_mcp_extraction_non_tools_call():
 # 5. Dispatcher Test
 # ---------------------------------------------------------------------------
 
+
 def test_extract_tool_calls_dispatcher():
     openai_payload = {
         "choices": [
@@ -325,7 +341,9 @@ def test_extract_tool_calls_dispatcher():
             }
         ]
     }
-    events = extract_tool_calls(openai_payload, provider="openai", source_id="disp-agent")
+    events = extract_tool_calls(
+        openai_payload, provider="openai", source_id="disp-agent"
+    )
     assert len(events) == 1
     assert events[0].tool_name == "f1"
 
@@ -336,6 +354,7 @@ def test_extract_tool_calls_dispatcher():
 # ---------------------------------------------------------------------------
 # 6. Secret Redaction Tests
 # ---------------------------------------------------------------------------
+
 
 def test_secret_redaction():
     raw_payload = {
@@ -380,6 +399,7 @@ def test_action_event_automatic_redaction():
 # ---------------------------------------------------------------------------
 # 7. Immutability & Tamper Detection Tests
 # ---------------------------------------------------------------------------
+
 
 def test_model_immutability():
     event = ActionEvent(
@@ -431,6 +451,7 @@ def test_canonical_json_determinism():
 # 8. PR #318 ActionLedger Adapter Tests
 # ---------------------------------------------------------------------------
 
+
 def test_to_ledger_params_mapping():
     event = ActionEvent(
         event_id="evt_test_123",
@@ -456,6 +477,7 @@ def test_to_ledger_params_mapping():
 # ---------------------------------------------------------------------------
 # 9. Plugin Interposition & Fail-Open Tests
 # ---------------------------------------------------------------------------
+
 
 class MockSession:
     def __init__(self, responses=None, raise_exc=None):
@@ -500,7 +522,10 @@ def test_plugin_intercept_response_actions():
                     "tool_calls": [
                         {
                             "id": "c1",
-                            "function": {"name": "query_db", "arguments": '{"table": "users"}'},
+                            "function": {
+                                "name": "query_db",
+                                "arguments": '{"table": "users"}',
+                            },
                         }
                     ]
                 }
@@ -556,7 +581,13 @@ def test_plugin_secure_call_with_action_interposition():
                 {
                     "message": {
                         "tool_calls": [
-                            {"id": "c_1", "function": {"name": "send_email", "arguments": '{"to": "user@example.com"}'}}
+                            {
+                                "id": "c_1",
+                                "function": {
+                                    "name": "send_email",
+                                    "arguments": '{"to": "user@example.com"}',
+                                },
+                            }
                         ]
                     }
                 }
@@ -608,10 +639,13 @@ def test_plugin_mcp_client_interposition():
 
 def test_plugin_emit_action_handles_429_fail_open():
     """Verify that the client absorbs HTTP 429 saturation without raising, returning degraded status."""
+
     class Mock429Response:
         status_code = 429
+
         def raise_for_status(self):
             pass
+
         def json(self):
             return {"status": "rejected_capacity"}
 
@@ -620,7 +654,9 @@ def test_plugin_emit_action_handles_429_fail_open():
             return Mock429Response()
 
     plugin = TenetSecurityPlugin(session=Mock429Session(), fail_mode="closed")
-    event = ActionEvent(source_id="agent", provider="openai", tool_name="tool", tool_args={})
+    event = ActionEvent(
+        source_id="agent", provider="openai", tool_name="tool", tool_args={}
+    )
     res = plugin.emit_action_event(event)
     assert res["status"] == "rejected_capacity"
     assert res["observe_only"] is True
@@ -631,6 +667,7 @@ def test_plugin_emit_action_handles_429_fail_open():
 @pytest.mark.asyncio
 async def test_plugin_mcp_async_client_interposition_fail_open():
     """Verify that async MCP call_tool executes fail-open even if action telemetry fails."""
+
     class FailingSession:
         def post(self, url, headers=None, json=None, timeout=None):
             raise ConnectionError("Ingest offline")
@@ -650,3 +687,259 @@ async def test_plugin_mcp_async_client_interposition_fail_open():
     res = await wrapped_client.call_tool("async_action", {"key": "val"})
     assert res == {"result": "Executed async_action"}
     assert client.called is True
+
+
+def test_gemini_extraction_response_id_support():
+    """Verify that camelCase responseId is recognized on dict and object payloads."""
+    dict_payload = {
+        "responseId": "resp-gemini-camel-999",
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "name": "fetch_metric",
+                                "args": {"metric": "cpu_load"},
+                            }
+                        }
+                    ]
+                }
+            }
+        ],
+    }
+    events = extract_gemini_tools(dict_payload, source_id="agent-gemini")
+    assert len(events) == 1
+    import hashlib
+
+    expected_hash = hashlib.sha256(
+        b"resp-gemini-camel-999:0:0:fetch_metric"
+    ).hexdigest()[:16]
+    assert events[0].call_id == f"call_gemini_{expected_hash}"
+
+    class ObjectPayload:
+        def __init__(self):
+            self.responseId = "resp-gemini-obj-777"
+            self.candidates = [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "name": "fetch_metric",
+                                    "args": {"metric": "memory_load"},
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+
+    obj_events = extract_gemini_tools(ObjectPayload(), source_id="agent-gemini")
+    assert len(obj_events) == 1
+    expected_obj_hash = hashlib.sha256(
+        b"resp-gemini-obj-777:0:0:fetch_metric"
+    ).hexdigest()[:16]
+    assert obj_events[0].call_id == f"call_gemini_{expected_obj_hash}"
+
+
+def test_extractors_falsy_arguments_handling():
+    """Verify that empty string, 0, False, and [] arguments are treated as parse_error/raw."""
+    from services.security.interposition.extractors import (
+        extract_anthropic_tools,
+        extract_mcp_tools,
+        extract_openai_tools,
+    )
+
+    # OpenAI with empty string arguments
+    openai_payload = {
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "id": "call_falsy_str",
+                            "type": "function",
+                            "function": {"name": "action", "arguments": ""},
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    oa_events = extract_openai_tools(openai_payload, "agent")
+    assert len(oa_events) == 1
+    assert oa_events[0].parse_error is True
+    assert oa_events[0].tool_args == {"_raw": ""}
+
+    # Anthropic with empty string input
+    anthropic_payload = {
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "toolu_falsy_01",
+                "name": "action",
+                "input": "",
+            }
+        ]
+    }
+    an_events = extract_anthropic_tools(anthropic_payload, "agent")
+    assert len(an_events) == 1
+    assert an_events[0].parse_error is True
+    assert an_events[0].tool_args == {"_raw": ""}
+
+    # MCP with empty string arguments
+    mcp_payload = {
+        "method": "tools/call",
+        "params": {"name": "mcp_action", "arguments": ""},
+    }
+    mcp_events = extract_mcp_tools(mcp_payload, "agent")
+    assert len(mcp_events) == 1
+    assert mcp_events[0].parse_error is True
+    assert mcp_events[0].tool_args == {"_raw": ""}
+
+
+def _build_synthetic_pem(key_type: str = "RSA") -> str:
+    """Construct a synthetic multiline PEM-format private key fixture at runtime.
+
+    Dynamically constructed to prevent static secret scanners (e.g. GitGuardian)
+    from triggering false positives on test fixtures, while ensuring rigorous
+    verification of multiline PEM redaction across RSA, EC, OPENSSH, and PKCS#8 key types.
+    """
+    prefix = "-----" + "BEGIN "
+    suffix = "-----" + "END "
+    tag = f"{key_type} PRIVATE KEY".strip()
+    header = f"{prefix}{tag}-----"
+    footer = f"{suffix}{tag}-----"
+    body = (
+        "MOCK_BASE64_PAYLOAD_LINE_ONE_0123456789ABCDEF==\n"
+        "MOCK_BASE64_PAYLOAD_LINE_TWO_GHIJKLMNOPQRSTUV=="
+    )
+    return f"{header}\n{body}\n{footer}"
+
+
+def test_pem_private_key_multiline_redaction():
+    """Verify full multiline PEM private key redaction across standard key types."""
+    for key_type in ["RSA", "EC", "OPENSSH", ""]:
+        pem_key = _build_synthetic_pem(key_type)
+
+        # 1. Verification in structured dictionary fields with sensitive key name
+        event = ActionEvent(
+            source_id="agent-sec",
+            provider="openai",
+            tool_name="configure_tls",
+            tool_args={"cert": "public_cert_data", "private_key": pem_key},
+        )
+        assert event.tool_args["private_key"] == "[REDACTED]"
+
+        # 2. Verification in unstructured string fields (e.g. shell prompt / script)
+        cmd_input = f"echo '{pem_key}' > /tmp/key.pem"
+        event_str = ActionEvent(
+            source_id="agent-sec",
+            provider="openai",
+            tool_name="shell_exec",
+            tool_args={"cmd": cmd_input},
+        )
+        assert "MOCK_BASE64_PAYLOAD" not in event_str.tool_args["cmd"]
+        assert "PRIVATE KEY" not in event_str.tool_args["cmd"]
+        assert "[REDACTED]" in event_str.tool_args["cmd"]
+        assert event_str.tool_args["cmd"] == "echo '[REDACTED]' > /tmp/key.pem"
+
+
+def test_hyphenated_and_space_sensitive_key_redaction():
+    """Verify normalization of hyphenated sensitive keys like x-api-key and access-token."""
+    event = ActionEvent(
+        source_id="agent-sec",
+        provider="openai",
+        tool_name="http_request",
+        tool_args={
+            "headers": {
+                "x-api-key": "secret-123",
+                "access-token": "tok-456",
+                "webhook-url": "https://hooks.slack.com/services/T00/B00/X00",
+                "Content-Type": "application/json",
+            }
+        },
+    )
+    headers = event.tool_args["headers"]
+    assert headers["x-api-key"] == "[REDACTED]"
+    assert headers["access-token"] == "[REDACTED]"
+    assert headers["webhook-url"] == "[REDACTED]"
+    assert headers["Content-Type"] == "application/json"
+
+
+def test_malformed_json_fallback_credential_redaction():
+    """Verify that malformed JSON strings containing credentials are sanitized in _raw."""
+    malformed_json_str = '{"api_key": "unredacted_secret_value", "query": 123'
+    openai_payload = {
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "id": "call_bad_json",
+                            "type": "function",
+                            "function": {
+                                "name": "action",
+                                "arguments": malformed_json_str,
+                            },
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    from services.security.interposition.extractors import extract_openai_tools
+
+    events = extract_openai_tools(openai_payload, "agent")
+    assert len(events) == 1
+    assert events[0].parse_error is True
+    assert "unredacted_secret_value" not in events[0].tool_args["_raw"]
+    assert "[REDACTED]" in events[0].tool_args["_raw"]
+
+
+def test_emit_action_event_dict_input_normalization():
+    """Verify that passing a raw dict to emit_action_event normalizes and sanitizes it."""
+
+    class MockSession:
+        def __init__(self):
+            self.last_json = None
+
+        def post(self, url, headers=None, json=None, timeout=None):
+            self.last_json = json
+
+            class Resp:
+                status_code = 200
+
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"status": "queued"}
+
+            return Resp()
+
+    mock_sess = MockSession()
+    plugin = TenetSecurityPlugin(session=mock_sess)
+    raw_dict = {
+        "source_id": "agent-dict",
+        "provider": "openai",
+        "tool_name": "db_query",
+        "tool_args": {"api_key": "leak-secret", "query": "SELECT 1"},
+    }
+    plugin.emit_action_event(raw_dict)
+    assert mock_sess.last_json is not None
+    assert mock_sess.last_json["tool_args"]["api_key"] == "[REDACTED]"
+    assert mock_sess.last_json["raw_payload_hash"] != ""
+
+
+def test_observe_only_enforced_true():
+    """Verify that observe_only=False is strictly overridden to True."""
+    event = ActionEvent(
+        source_id="agent",
+        provider="openai",
+        tool_name="test",
+        tool_args={},
+        observe_only=False,
+    )
+    assert event.observe_only is True
