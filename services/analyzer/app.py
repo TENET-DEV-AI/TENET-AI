@@ -25,8 +25,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from services.utils.logging_config import setup_logging
 from services.security import SecurityManager
-from services.utils.metrics import PrometheusMiddleware, increment_detection
-from services.utils.env_validator import non_negative_float, port, probability, validate_env_vars
+from services.utils.metrics import ACTION_OBSERVED_COUNT, ACTION_OLDEST_EVENT_AGE, ACTION_OVERFLOW_DRAINED, ACTION_OVERFLOW_DRAIN_FAILURES, ACTION_QUEUE_DEPTH, PrometheusMiddleware, increment_detection
+from services.utils.env_validator import non_negative_float, port, positive_int, probability, validate_env_vars
 from prometheus_client import make_asgi_app
 logger = setup_logging(__name__)
 
@@ -41,12 +41,16 @@ _ENV_DEFAULTS = {
     "MODEL_PATH": "./models/trained",
     "PROMPT_INJECTION_THRESHOLD": 0.75,
     "SHUTDOWN_TIMEOUT": 10.0,
+    "TENET_ACTION_QUEUE_MAX_CAPACITY": 25000,
+    "TENET_OVERFLOW_DRAIN_INTERVAL": 50,
 }
 _ENV_TYPES = {
     "REDIS_PORT": port,
     "API_PORT": port,
     "PROMPT_INJECTION_THRESHOLD": probability,
     "SHUTDOWN_TIMEOUT": non_negative_float,
+    "TENET_ACTION_QUEUE_MAX_CAPACITY": positive_int,
+    "TENET_OVERFLOW_DRAIN_INTERVAL": positive_int,
 }
 
 REDIS_HOST = _ENV_DEFAULTS["REDIS_HOST"]
@@ -56,6 +60,8 @@ API_PORT = _ENV_DEFAULTS["API_PORT"]
 MODEL_PATH = _ENV_DEFAULTS["MODEL_PATH"]
 PROMPT_INJECTION_THRESHOLD = _ENV_DEFAULTS["PROMPT_INJECTION_THRESHOLD"]
 SHUTDOWN_TIMEOUT = _ENV_DEFAULTS["SHUTDOWN_TIMEOUT"]
+MAX_PRIMARY_CAPACITY = _ENV_DEFAULTS["TENET_ACTION_QUEUE_MAX_CAPACITY"]
+OVERFLOW_DRAIN_EVENT_INTERVAL = _ENV_DEFAULTS["TENET_OVERFLOW_DRAIN_INTERVAL"]
 
 
 def load_config() -> None:
@@ -66,6 +72,7 @@ def load_config() -> None:
     """
     global REDIS_HOST, REDIS_PORT, API_HOST, API_PORT, MODEL_PATH
     global PROMPT_INJECTION_THRESHOLD, SHUTDOWN_TIMEOUT
+    global MAX_PRIMARY_CAPACITY, OVERFLOW_DRAIN_EVENT_INTERVAL
 
     config = validate_env_vars([], optional_vars=_ENV_DEFAULTS, types=_ENV_TYPES)
 
@@ -76,6 +83,8 @@ def load_config() -> None:
     MODEL_PATH = config["MODEL_PATH"]
     PROMPT_INJECTION_THRESHOLD = config["PROMPT_INJECTION_THRESHOLD"]
     SHUTDOWN_TIMEOUT = config["SHUTDOWN_TIMEOUT"]
+    MAX_PRIMARY_CAPACITY = config["TENET_ACTION_QUEUE_MAX_CAPACITY"]
+    OVERFLOW_DRAIN_EVENT_INTERVAL = config["TENET_OVERFLOW_DRAIN_INTERVAL"]
 
 # FastAPI app
 app = FastAPI(
@@ -113,6 +122,7 @@ ml_model = None
 vectorizer = None
 stop_event: Optional[asyncio.Event] = None
 background_task = None
+action_background_task = None
 security = SecurityManager(
     service_name="analyzer",
     redis_call=lambda coro: coro,
@@ -196,7 +206,7 @@ async def startup():
         Exception: Logged internally; does not propagate to prevent startup
         failure when Redis or models are temporarily unavailable.
         """
-    global redis_client, ml_model, vectorizer, background_task, stop_event
+    global redis_client, ml_model, vectorizer, background_task, stop_event, action_background_task
 
     load_config()
 
@@ -218,8 +228,15 @@ async def startup():
 
     
     # Create stop event and start background processor
-    stop_event = asyncio.Event()
-    background_task = asyncio.create_task(process_event_queue())
+    if stop_event is None:
+        stop_event = asyncio.Event()
+    else:
+        stop_event.clear()
+
+    if background_task is None or background_task.done():
+        background_task = asyncio.create_task(process_event_queue())
+    if action_background_task is None or action_background_task.done():
+        action_background_task = asyncio.create_task(process_action_event_queue())
 
 
 @app.on_event("shutdown")
@@ -238,25 +255,29 @@ async def shutdown():
             Exception: Logged internally; shutdown always completes even if
                 individual cleanup steps fail.
     """
-    global redis_client, stop_event, background_task
+    global redis_client, stop_event, background_task, action_background_task
     
-    # Signal the background task to stop
+    # Signal the background tasks to stop
     if stop_event:
         stop_event.set()
-        logger.info("Stop event set, waiting for background task to finish")
+        logger.info("Stop event set, waiting for background tasks to finish")
     
-    # Wait for background task to complete gracefully
-    if background_task:
-        try:
-            await asyncio.wait_for(background_task, timeout=SHUTDOWN_TIMEOUT)
-            logger.info("Background task completed")
-        except asyncio.TimeoutError:
-            logger.warning("Background task did not complete in time, cancelling")
-            background_task.cancel()
+    # Wait for background tasks to complete gracefully
+    for task_name, task in [("prompt", background_task), ("action", action_background_task)]:
+        if task:
             try:
-                await background_task
-            except asyncio.CancelledError:  # NOSONAR - Don't re-raise in shutdown handler, cancellation is expected
-                logger.info("Background task cancelled successfully")
+                await asyncio.wait_for(task, timeout=SHUTDOWN_TIMEOUT)
+                logger.info("Background %s task completed", task_name)
+            except asyncio.TimeoutError:
+                logger.warning("Background %s task did not complete in time, cancelling", task_name)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    logger.info("Background %s task cancelled successfully", task_name)
+
+    background_task = None
+    action_background_task = None
 
     # Close Redis connection
     if redis_client:
@@ -843,6 +864,174 @@ async def process_event_queue():
                 
         except Exception:
             logger.exception("Queue processing error")
+            await _wait_with_timeout(5.0)
+
+
+
+CLUSTER_TAG = "{tenet}"
+
+async def _get_or_reconnect_redis() -> Optional[redis.Redis]:
+    global redis_client
+    if redis_client:
+        try:
+            await redis_client.ping()
+            return redis_client
+        except Exception:  # noqa: BLE001
+            try:
+                await redis_client.close()
+            except Exception:  # noqa: BLE001, S110
+                pass
+            redis_client = None
+
+    try:
+        client = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            decode_responses=True,
+            socket_connect_timeout=2.0,
+            socket_timeout=2.0,
+        )
+        await client.ping()
+        redis_client = client
+        logger.info("Reconnected to Redis at %s:%s", REDIS_HOST, REDIS_PORT)
+        return redis_client
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Redis reconnection attempt failed: %s", exc)
+        return None
+
+
+LUA_DRAIN_OVERFLOW_SCRIPT = """
+local primary_len = redis.call('LLEN', KEYS[2])
+if primary_len < tonumber(ARGV[1]) then
+    local item = redis.call('RPOPLPUSH', KEYS[1], KEYS[2])
+    if item then
+        return 1
+    end
+end
+return 0
+"""
+
+async def _drain_overflow_queue_step() -> int:
+    """Atomically transfer events from overflow to primary queue if primary has capacity."""
+    if not redis_client:
+        return 0
+    try:
+        keys = [f"{CLUSTER_TAG}:events:action:overflow", f"{CLUSTER_TAG}:events:action:queue"]
+        args = [MAX_PRIMARY_CAPACITY]
+        res = await redis_client.eval(LUA_DRAIN_OVERFLOW_SCRIPT, len(keys), *keys, *args)
+        try:
+            p_len = await redis_client.llen(f"{CLUSTER_TAG}:events:action:queue")
+            o_len = await redis_client.llen(f"{CLUSTER_TAG}:events:action:overflow")
+            ACTION_QUEUE_DEPTH.labels(queue="primary").set(float(p_len))
+            ACTION_QUEUE_DEPTH.labels(queue="overflow").set(float(o_len))
+        except Exception:  # noqa: BLE001, S110
+            pass
+        if res == 1:
+            ACTION_OVERFLOW_DRAINED.inc()
+            return 1
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        ACTION_OVERFLOW_DRAIN_FAILURES.inc()
+        logger.warning("Failed to drain overflow queue: %s", exc)
+        return 0
+
+
+async def _process_single_action_event(event_data: str) -> None:
+    """Process a single action event popped from tenet:events:action:queue."""
+    try:
+        event = json.loads(event_data)
+    except json.JSONDecodeError:
+        logger.warning("Failed to decode JSON from action queue, skipping")
+        return
+
+    if not isinstance(event, dict):
+        logger.warning("Action event is not a dictionary, skipping")
+        return
+
+    event_id = event.get("event_id")
+    if not event_id or not isinstance(event_id, str):
+        logger.warning("Skipping action event without valid event_id")
+        return
+
+    event_id = event_id.strip()
+    if not event_id:
+        return
+
+    logger.info("Processing action event: %s (tool: %s)", event_id, event.get("tool_name"))
+    tool_name = str(event.get("tool_name", "unknown"))[:64]
+    provider = str(event.get("provider", "unknown"))
+    bounded_provider = provider if provider in {"openai", "anthropic", "gemini", "mcp"} else "other"
+
+    event["verdict"] = "observed"
+    event["observed_at"] = datetime.now(timezone.utc).isoformat()
+    event["status"] = "observed"
+
+    persisted = False
+    if redis_client:
+        try:
+            org_id = event.get("org_id")
+            event_key = f"{CLUSTER_TAG}:action_event:{org_id}:{event_id}" if org_id else f"{CLUSTER_TAG}:action_event:{event_id}"
+            await redis_client.set(event_key, json.dumps(event), ex=86400)
+            persisted = True
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to update action event %s in Redis", event_id)
+            try:
+                await redis_client.rpush(f"{CLUSTER_TAG}:events:action:queue", event_data)
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to requeue action event %s", event_id)
+
+    if persisted:
+        ACTION_OBSERVED_COUNT.labels(tool_name=tool_name, provider=bounded_provider).inc()
+
+
+async def process_action_event_queue():
+    """Background task to process action events from the Redis action queue."""
+    events_since_drain_attempt = 0
+
+    while stop_event is not None and not stop_event.is_set():
+        try:
+            if not redis_client:
+                r_client = await _get_or_reconnect_redis()
+                if not r_client:
+                    await _wait_with_timeout(5.0)
+                    continue
+
+            # Measure oldest event waiting in the queues
+            try:
+                oldest_raw = await redis_client.lindex(f"{CLUSTER_TAG}:events:action:queue", -1)
+                if not oldest_raw:
+                    oldest_raw = await redis_client.lindex(f"{CLUSTER_TAG}:events:action:overflow", -1)
+                if oldest_raw:
+                    oldest_evt = json.loads(oldest_raw)
+                    ts_str = oldest_evt.get("timestamp")
+                    if ts_str:
+                        created_at = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+                        age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
+                        ACTION_OLDEST_EVENT_AGE.set(max(0.0, age_seconds))
+                else:
+                    ACTION_OLDEST_EVENT_AGE.set(0.0)
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+            event_json = await redis_client.rpop(f"{CLUSTER_TAG}:events:action:queue")
+            if event_json:
+                await _process_single_action_event(event_json)
+                try:
+                    p_len = await redis_client.llen(f"{CLUSTER_TAG}:events:action:queue")
+                    ACTION_QUEUE_DEPTH.labels(queue="primary").set(float(p_len))
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                events_since_drain_attempt += 1
+                if events_since_drain_attempt >= OVERFLOW_DRAIN_EVENT_INTERVAL:
+                    events_since_drain_attempt = 0
+                    await _drain_overflow_queue_step()
+            else:
+                events_since_drain_attempt = 0
+                drained = await _drain_overflow_queue_step()
+                if not drained:
+                    await _wait_with_timeout(1.0)
+        except Exception:  # noqa: BLE001
+            logger.exception("Action queue processing error")
             await _wait_with_timeout(5.0)
 
 
