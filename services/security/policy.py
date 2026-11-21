@@ -36,6 +36,12 @@ class PolicyError(ValueError):
     """The policy document is malformed."""
 
 
+def _field_matches(pattern: str, value: Optional[str], effect: str) -> bool:
+    if value is None:
+        return effect != ALLOW or pattern == "*"
+    return fnmatch.fnmatchcase(value, pattern)
+
+
 @dataclass(frozen=True)
 class Rule:
     id: str
@@ -45,12 +51,15 @@ class Rule:
     scope: str = "*"
     reason: str = ""
 
-    def matches(self, action: str, tool: str, scope: str) -> bool:
-        return (
-            fnmatch.fnmatchcase(action, self.action)
-            and fnmatch.fnmatchcase(tool, self.tool)
-            and fnmatch.fnmatchcase(scope, self.scope)
-        )
+    def matches(self, action: str, tool: Optional[str] = None, scope: Optional[str] = None) -> bool:
+        """Match an action. ``tool`` or ``scope`` of None means the caller did not say.
+
+        An unknown tool or scope could be anything, so a block or require_approval rule applies
+        whatever it narrows to, while an allow rule only applies if it does not narrow that field.
+        """
+        if not fnmatch.fnmatchcase(action, self.action):
+            return False
+        return _field_matches(self.tool, tool, self.effect) and _field_matches(self.scope, scope, self.effect)
 
 
 @dataclass(frozen=True)
@@ -91,6 +100,9 @@ class PolicyEngine:
         if default_effect not in EFFECTS:
             raise PolicyError(f"default_effect must be one of {', '.join(EFFECTS)}, got {default_effect!r}")
         self.rules = tuple(rules)
+        for rule in self.rules:
+            if rule.effect not in EFFECTS:
+                raise PolicyError(f"rule {rule.id!r}: effect must be one of {', '.join(EFFECTS)}, got {rule.effect!r}")
         ids = [r.id for r in self.rules]
         duplicates = sorted({i for i in ids if ids.count(i) > 1})
         if duplicates:
@@ -101,10 +113,13 @@ class PolicyEngine:
     def from_document(cls, document: Any) -> "PolicyEngine":
         if not isinstance(document, dict) or not isinstance(document.get("rules"), list):
             raise PolicyError("policy must be a mapping with a 'rules' list")
+        unknown = set(document) - {"rules", "default"}
+        if unknown:
+            raise PolicyError(f"policy has unknown field(s) {', '.join(sorted(map(str, unknown)))}")
         rules = [parse_rule(raw, i) for i, raw in enumerate(document["rules"])]
         return cls(rules, default_effect=document.get("default", BLOCK))
 
-    def evaluate(self, action: str, tool: str = "*", scope: str = "*") -> Decision:
+    def evaluate(self, action: str, tool: Optional[str] = None, scope: Optional[str] = None) -> Decision:
         matched = [r for r in self.rules if r.matches(action, tool, scope)]
         if not matched:
             return Decision(self.default_effect, None, "no rule matched; default applies")
@@ -113,6 +128,33 @@ class PolicyEngine:
             winner.effect, winner.id, winner.reason or f"matched rule {winner.id}",
             tuple(r.id for r in matched),
         )
+
+
+def _reject_duplicate_pairs(pairs: list) -> dict:
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            raise PolicyError(f"duplicate key {key!r} in policy")
+        result[key] = value
+    return result
+
+
+def _strict_yaml_loader(yaml: Any) -> Any:
+    class StrictLoader(yaml.SafeLoader):  # type: ignore[misc,name-defined]
+        pass
+
+    def construct_mapping(loader: Any, node: Any, deep: bool = False) -> dict:
+        loader.flatten_mapping(node)
+        keys = [loader.construct_object(k, deep=deep) for k, _ in node.value]
+        seen = set()
+        for key in keys:
+            if key in seen:
+                raise PolicyError(f"duplicate key {key!r} in policy")
+            seen.add(key)
+        return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+    StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_mapping)
+    return StrictLoader
 
 
 def load_policy(path: Union[str, Path]) -> PolicyEngine:
@@ -125,12 +167,12 @@ def load_policy(path: Union[str, Path]) -> PolicyEngine:
         except ImportError as exc:
             raise PolicyError("YAML policies need PyYAML (pip install pyyaml); JSON policies need nothing") from exc
         try:
-            document = yaml.safe_load(text)
+            document = yaml.load(text, Loader=_strict_yaml_loader(yaml))  # noqa: S506 - SafeLoader subclass
         except yaml.YAMLError as exc:
             raise PolicyError(f"{p.name} is not valid YAML: {exc}") from exc
     else:
         try:
-            document = json.loads(text)
+            document = json.loads(text, object_pairs_hook=_reject_duplicate_pairs)
         except json.JSONDecodeError as exc:
             raise PolicyError(f"{p.name} is not valid JSON: {exc}") from exc
     return PolicyEngine.from_document(document)

@@ -106,3 +106,50 @@ def test_load_yaml_policy_when_available(tmp_path):
     path = tmp_path / "policy.yaml"
     path.write_text(yaml.safe_dump({"rules": [{"id": "r", "effect": "require_approval", "action": "pay.*"}]}))
     assert load_policy(path).evaluate("pay.out").verdict == REQUIRE_APPROVAL
+
+
+def test_omitted_scope_does_not_slip_past_a_scoped_block():
+    e = engine(Rule("any", ALLOW), Rule("no-prod", BLOCK, action="db.delete*", scope="prod/*"))
+    assert e.evaluate("db.delete_table").verdict == BLOCK
+    assert e.evaluate("db.delete_table", scope="dev/x").verdict == ALLOW
+
+
+def test_omitted_tool_does_not_slip_past_a_tool_gate():
+    e = engine(Rule("any", ALLOW), Rule("gate", REQUIRE_APPROVAL, tool="shell"))
+    assert e.evaluate("run").verdict == REQUIRE_APPROVAL
+
+
+def test_narrowed_allow_does_not_cover_an_unknown_scope():
+    e = engine(Rule("dev-only", ALLOW, scope="dev/*"))
+    assert e.evaluate("x", scope="dev/a").verdict == ALLOW
+    assert e.evaluate("x").verdict == BLOCK
+
+
+def test_engine_rejects_directly_built_rules_with_a_bad_effect():
+    with pytest.raises(PolicyError):
+        PolicyEngine([Rule("bad", "permit")])
+
+
+def test_unknown_top_level_keys_are_rejected():
+    with pytest.raises(PolicyError, match="defualt"):
+        PolicyEngine.from_document({"rules": [], "defualt": "allow"})
+
+
+def test_duplicate_json_keys_are_rejected(tmp_path):
+    path = tmp_path / "p.json"
+    path.write_text('{"rules": [{"id": "r", "effect": "block", "effect": "allow"}]}')
+    with pytest.raises(PolicyError, match="duplicate key"):
+        load_policy(path)
+    path.write_text('{"rules": [], "rules": []}')
+    with pytest.raises(PolicyError, match="duplicate key"):
+        load_policy(path)
+
+
+def test_duplicate_yaml_keys_are_rejected(tmp_path):
+    pytest.importorskip("yaml")
+    path = tmp_path / "p.yaml"
+    path.write_text("rules:\n  - id: r\n    effect: block\n    effect: allow\n")
+    with pytest.raises(PolicyError, match="duplicate key"):
+        load_policy(path)
+    path.write_text("rules:\n  - id: r\n    effect: block\n")
+    assert load_policy(path).evaluate("x").verdict == BLOCK
