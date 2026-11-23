@@ -850,6 +850,7 @@ def quick_heuristic_check(prompt: str) -> tuple[bool, float, str, str]:
         "without any limitations",
         "bypass your programming",
         "override your safety",
+        "bypass your safety protocols",
         "pretend you have no rules",
         "act as an unrestricted ai",
         "evil mode",
