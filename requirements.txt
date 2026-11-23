@@ -15,13 +15,13 @@ jinja2>=3.1.6  # CVE-2024-56326, CVE-2025-27516 fixes
 h11>=0.16.0  # CVE-2025-43859 fix
 
 # ML & Data Science
-scikit-learn>=1.9.0
+scikit-learn>=1.9.1
 numpy>=2.5.4
-pandas>=3.1.0
+pandas>=3.1.1
 joblib>=1.6.0
 
 # Data Processing
-python-multipart>=0.0.32
+python-multipart>=0.0.33
 
 # Database & Cache
 redis>=8.1.0
@@ -35,5 +35,5 @@ requests>=2.34.2
 python-dotenv>=1.2.4
 
 # Utilities
-python-dateutil>=2.9.0.post0
+python-dateutil>=4.0.0
 prometheus-client>=0.26.0

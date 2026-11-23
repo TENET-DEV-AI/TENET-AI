@@ -34,11 +34,13 @@ def is_service_running(url: str) -> bool:
 
 @pytest.fixture(scope="module", autouse=True)
 def check_services():
-    """Skip tests if services are not running."""
-    if not is_service_running(INGEST_URL):
-        pytest.skip(f"Ingest service not running at {INGEST_URL}")
-    if not is_service_running(ANALYZER_URL):
-        pytest.skip(f"Analyzer service not running at {ANALYZER_URL}")
+    """Require live services in CI; allow local runs without them to skip."""
+    for name, url in (("Ingest", INGEST_URL), ("Analyzer", ANALYZER_URL)):
+        if not is_service_running(url):
+            message = f"{name} service not running at {url}"
+            if os.getenv("REQUIRE_SERVICES") == "1":
+                pytest.fail(message)
+            pytest.skip(message)
 
 
 class TestEndToEndFlow:

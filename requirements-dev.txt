@@ -9,7 +9,7 @@ pytest>=9.2.0
 pytest-asyncio>=1.4.1
 pytest-cov>=4.1.0
 pytest-mock>=3.17.0
-faker>=40.44.0
+faker>=40.54.0
 
 # Code Quality
 black>=26.10.1
@@ -22,7 +22,7 @@ bandit>=1.9.4
 safety>=3.8.1  # Updated for latest vulnerability database
 
 # Development Tools
-ipython>=9.17.1
+ipython>=9.18.1
 watchdog>=6.0.0
 
 # Type Stubs

@@ -7,7 +7,7 @@ Welcome! This guide covers everything you need to know about testing in TENET AI
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Python 3.11+
+- Python 3.12+
 - Virtual environment (venv, conda, etc.)
 - Git
 
