@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import logging
+import queue
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
 import requests
+
 from services.security.action_event import ActionEvent
 from services.security.interposition.extractors import extract_tool_calls
 
@@ -46,6 +50,7 @@ class TenetSecurityPlugin:
         timeout_seconds: float = 5.0,
         fail_mode: str = "open",
         session: requests.Session | None = None,
+        max_queue_size: int = 1000,
     ) -> None:
         if fail_mode not in {"open", "closed"}:
             raise ValueError("fail_mode must be 'open' or 'closed'")
@@ -57,10 +62,71 @@ class TenetSecurityPlugin:
         self.timeout_seconds = timeout_seconds
         self.fail_mode = fail_mode
         self.session = session or requests.Session()
+        self.max_queue_size = max_queue_size
+        self._telemetry_queue: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]] = queue.Queue(
+            maxsize=max_queue_size
+        )
+        self._shutdown_event = threading.Event()
+        self._worker_thread: threading.Thread | None = None
+        self._worker_lock = threading.Lock()
+        atexit.register(self.shutdown, wait=False)
 
     @property
     def headers(self) -> dict[str, str]:
         return {"X-API-Key": self.api_key, "Content-Type": "application/json"}
+
+    def _ensure_worker(self) -> None:
+        if self._worker_thread is None or not self._worker_thread.is_alive():
+            with self._worker_lock:
+                if self._worker_thread is None or not self._worker_thread.is_alive():
+                    self._worker_thread = threading.Thread(
+                        target=self._telemetry_worker,
+                        name="tenet-telemetry-worker",
+                        daemon=True,
+                    )
+                    self._worker_thread.start()
+
+    def _telemetry_worker(self) -> None:
+        while not self._shutdown_event.is_set():
+            try:
+                fn, args, kwargs = self._telemetry_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                fn(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Background telemetry execution failed: %s", exc)
+            finally:
+                self._telemetry_queue.task_done()
+
+    def _submit_telemetry(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> bool:
+        """Submit a telemetry task to the bounded background queue without blocking caller."""
+        if self._shutdown_event.is_set():
+            logger.warning("TENET telemetry worker is shut down; dropping event fail-open")
+            return False
+        self._ensure_worker()
+        try:
+            self._telemetry_queue.put_nowait((fn, args, kwargs))
+            return True
+        except queue.Full:
+            logger.warning(
+                "TENET background telemetry queue full (capacity=%d); dropping event fail-open",
+                self._telemetry_queue.maxsize,
+            )
+            return False
+
+    def flush(self, timeout: float | None = 2.0) -> None:
+        """Wait for pending background telemetry tasks to drain."""
+        try:
+            self._telemetry_queue.join()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Telemetry queue flush interrupted: %s", exc)
+
+    def shutdown(self, wait: bool = True, timeout: float | None = 2.0) -> None:
+        """Shut down the background telemetry worker."""
+        self._shutdown_event.set()
+        if wait and self._worker_thread and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=timeout)
 
     def inspect_prompt(
         self,
@@ -215,7 +281,7 @@ class TenetSecurityPlugin:
                     call_id = kwargs.get("call_id")
                     if call_id is not None:
                         mcp_request["id"] = call_id
-                    await asyncio.to_thread(plugin.intercept_response_actions, mcp_request, "mcp")
+                    plugin._submit_telemetry(plugin.intercept_response_actions, mcp_request, "mcp")
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("MCP action interception telemetry error (continuing fail-open): %s", exc)
                 return await original_call_tool(name, arguments, *args, **kwargs)

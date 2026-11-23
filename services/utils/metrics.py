@@ -77,6 +77,16 @@ ACTION_QUEUE_SATURATED = Counter(
 )
 
 
+BOUNDED_PROVIDERS: set[str] = {"openai", "anthropic", "gemini", "mcp"}
+
+
+def get_bounded_provider(provider: str | None) -> str:
+    """Map raw provider string to bounded label set: openai, anthropic, gemini, mcp, other."""
+    if isinstance(provider, str) and provider in BOUNDED_PROVIDERS:
+        return provider
+    return "other"
+
+
 def increment_detection(service: str, threat_type: str, verdict: str) -> None:
     """Helper to increment detection counters."""
     if not threat_type:

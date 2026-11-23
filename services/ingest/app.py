@@ -16,6 +16,7 @@ import logging
 import os
 import signal
 import time
+import urllib.parse
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -26,7 +27,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, Se
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
-from services.security import ActionEvent, SecurityManager
+from services.security import ActionEvent, SecurityManager, encode_action_event_key, encode_action_event_prefix
 from services.utils.metrics import (
     ACTION_DUPLICATE_COUNT,
     ACTION_INGEST_COUNT,
@@ -34,6 +35,7 @@ from services.utils.metrics import (
     ACTION_QUEUE_DEPTH,
     ACTION_QUEUE_SATURATED,
     PrometheusMiddleware,
+    get_bounded_provider,
     increment_detection,
 )
 from prometheus_client import make_asgi_app
@@ -561,7 +563,7 @@ async def ingest_action_event(
 
     payload_json = json.dumps(event_dict)
 
-    event_key = f"{CLUSTER_TAG}:action_event:{auth.org_id}:{event.event_id}"
+    event_key = encode_action_event_key(auth.org_id, event.event_id, cluster_tag=CLUSTER_TAG)
     primary_queue = f"{CLUSTER_TAG}:events:action:queue"
     overflow_queue = f"{CLUSTER_TAG}:events:action:overflow"
     if event.call_id:
@@ -574,14 +576,14 @@ async def ingest_action_event(
 
     keys = [event_key, primary_queue, dedup_key, overflow_queue]
     args = [
-        event.event_id,
+        urllib.parse.quote(str(event.event_id).strip(), safe="-_.~"),
         payload_json,
         86400,
         300,
         MAX_PRIMARY_CAPACITY,
         MAX_OVERFLOW_CAPACITY,
         dedup_enabled,
-        f"{CLUSTER_TAG}:action_event:{auth.org_id}:",
+        encode_action_event_prefix(auth.org_id, cluster_tag=CLUSTER_TAG),
     ]
 
     res = None
@@ -592,11 +594,12 @@ async def ingest_action_event(
     if res is not None and isinstance(res, (list, tuple)) and len(res) >= 2:
         status_tag = res[0].decode("utf-8") if isinstance(res[0], bytes) else str(res[0])
         status_val = res[1].decode("utf-8") if isinstance(res[1], bytes) else str(res[1])
+        bounded_provider = get_bounded_provider(event.provider)
 
         if status_tag == "QUEUED":
             response.status_code = status.HTTP_200_OK
             response.headers["X-Tenet-Audit"] = "durable"
-            ACTION_INGEST_COUNT.labels(service="ingest", provider=event.provider, status="queued").inc()
+            ACTION_INGEST_COUNT.labels(service="ingest", provider=bounded_provider, status="queued").inc()
             ACTION_QUEUE_DEPTH.labels(queue="primary").set(float(status_val))
             security.audit(
                 action="ingest_action_event",
@@ -621,16 +624,16 @@ async def ingest_action_event(
         elif status_tag == "DUPLICATE_PERSISTED":
             response.status_code = status.HTTP_200_OK
             response.headers["X-Tenet-Audit"] = "duplicate"
-            ACTION_DUPLICATE_COUNT.labels(service="ingest", provider=event.provider).inc()
+            ACTION_DUPLICATE_COUNT.labels(service="ingest", provider=bounded_provider).inc()
             logger.info("Duplicate action event suppressed: %s:%s", event.source_id, event.call_id)
             security.audit(
                 action="ingest_action_event",
                 result="duplicate_suppressed",
                 context=auth,
-                metadata={"event_id": status_val, "tool_name": event.tool_name, "provider": event.provider, "degraded": False},
+                metadata={"event_id": urllib.parse.unquote(status_val), "tool_name": event.tool_name, "provider": event.provider, "degraded": False},
             )
             return ActionEventResponse(
-                event_id=status_val,
+                event_id=urllib.parse.unquote(status_val),
                 timestamp=event.timestamp,
                 tool_name=event.tool_name,
                 status="duplicate_suppressed",
@@ -647,10 +650,10 @@ async def ingest_action_event(
             response.status_code = status.HTTP_200_OK
             response.headers["X-Tenet-Audit"] = "duplicate-evicted"
             response.headers["Warning"] = '199 - "Original record evicted from storage"'
-            ACTION_DUPLICATE_COUNT.labels(service="ingest", provider=event.provider).inc()
+            ACTION_DUPLICATE_COUNT.labels(service="ingest", provider=bounded_provider).inc()
             logger.warning("Duplicate action event with evicted storage record: %s:%s", event.source_id, event.call_id)
             return ActionEventResponse(
-                event_id=status_val,
+                event_id=urllib.parse.unquote(status_val),
                 timestamp=event.timestamp,
                 tool_name=event.tool_name,
                 status="duplicate_evicted",
@@ -684,7 +687,7 @@ async def ingest_action_event(
             response.status_code = status.HTTP_202_ACCEPTED
             response.headers["X-Tenet-Audit"] = "overflow"
             response.headers["Warning"] = '199 - "Action queued in overflow buffer"'
-            ACTION_INGEST_COUNT.labels(service="ingest", provider=event.provider, status="overflow").inc()
+            ACTION_INGEST_COUNT.labels(service="ingest", provider=bounded_provider, status="overflow").inc()
             ACTION_QUEUE_DEPTH.labels(queue="overflow").set(float(status_val))
             logger.warning("Primary action queue full; event %s buffered in overflow", event.event_id)
             security.audit(
@@ -792,11 +795,14 @@ async def get_action_event(event_id: str, x_api_key: Optional[str] = Security(ap
     if redis_cb.state == CircuitState.OPEN or not redis_client:
         raise HTTPException(status_code=503, detail="Service degraded - event store unavailable")
 
-    scoped_key = f"{CLUSTER_TAG}:action_event:{auth.org_id}:{clean_id}"
+    scoped_key = encode_action_event_key(auth.org_id, clean_id, cluster_tag=CLUSTER_TAG)
+    legacy_scoped_key = f"{CLUSTER_TAG}:action_event:{auth.org_id}:{clean_id}"
     legacy_key = f"{CLUSTER_TAG}:action_event:{clean_id}"
 
     try:
         data = await asyncio.wait_for(redis_client.get(scoped_key), timeout=REDIS_TIMEOUT_S)
+        if not data and scoped_key != legacy_scoped_key:
+            data = await asyncio.wait_for(redis_client.get(legacy_scoped_key), timeout=REDIS_TIMEOUT_S)
         if not data:
             data = await asyncio.wait_for(redis_client.get(legacy_key), timeout=REDIS_TIMEOUT_S)
         await redis_cb.record_success()

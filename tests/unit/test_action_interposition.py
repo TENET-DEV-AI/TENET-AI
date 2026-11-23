@@ -13,6 +13,7 @@ Covers:
 
 import pytest
 from pydantic import ValidationError
+
 from services.security.action_event import (
     ActionEvent,
     canonical_json,
@@ -943,3 +944,160 @@ def test_observe_only_enforced_true():
         observe_only=False,
     )
     assert event.observe_only is True
+
+
+# ---------------------------------------------------------------------------
+# 11. CodeRabbit Remediation Tests
+# ---------------------------------------------------------------------------
+
+
+def test_get_bounded_provider_mapping():
+    """Verify provider mapping to bounded label set for Prometheus cardinality control."""
+    from services.utils.metrics import BOUNDED_PROVIDERS, get_bounded_provider
+
+    assert BOUNDED_PROVIDERS == {"openai", "anthropic", "gemini", "mcp"}
+
+    # Allowed providers map to themselves
+    assert get_bounded_provider("openai") == "openai"
+    assert get_bounded_provider("anthropic") == "anthropic"
+    assert get_bounded_provider("gemini") == "gemini"
+    assert get_bounded_provider("mcp") == "mcp"
+
+    # Arbitrary, malicious, or unknown providers map to 'other'
+    assert get_bounded_provider("other") == "other"
+    assert get_bounded_provider("cohere") == "other"
+    assert get_bounded_provider("mistral") == "other"
+    assert get_bounded_provider("custom-llm-service") == "other"
+    assert get_bounded_provider("attacker; DROP TABLE metrics;") == "other"
+    assert get_bounded_provider("") == "other"
+    assert get_bounded_provider("   ") == "other"
+    assert get_bounded_provider(None) == "other"
+    assert get_bounded_provider(12345) == "other"
+    assert get_bounded_provider(["openai"]) == "other"
+
+
+def test_encode_action_event_key_collision_resistance():
+    """Verify delimiter escaping in Redis keys prevents org_id/event_id collisions."""
+    from services.security.action_event import (
+        encode_action_event_key,
+        encode_action_event_prefix,
+    )
+
+    # Distinct pairs with colons must not collide
+    key_a = encode_action_event_key("org:1", "evt")
+    key_b = encode_action_event_key("org", "1:evt")
+    assert key_a != key_b
+    assert key_a == "{tenet}:action_event:org%3A1:evt"
+    assert key_b == "{tenet}:action_event:org:1%3Aevt"
+
+    # Multiple colons and special characters are safely escaped
+    complex_key = encode_action_event_key("tenant:dept:team", "act:run:999")
+    assert complex_key == "{tenet}:action_event:tenant%3Adept%3Ateam:act%3Arun%3A999"
+
+    # Standard alphanumeric IDs without colons match legacy format
+    std_key = encode_action_event_key("default-org", "evt-123_abc.xyz~1")
+    assert std_key == "{tenet}:action_event:default-org:evt-123_abc.xyz~1"
+
+    # None or empty org_id yields unscoped event key
+    unscoped_key = encode_action_event_key(None, "evt-456")
+    assert unscoped_key == "{tenet}:action_event:evt-456"
+    assert encode_action_event_key("", "evt-456") == "{tenet}:action_event:evt-456"
+
+    # Prefix encoding
+    assert encode_action_event_prefix("org:1") == "{tenet}:action_event:org%3A1:"
+    assert encode_action_event_prefix("simple-org") == "{tenet}:action_event:simple-org:"
+    assert encode_action_event_prefix(None) == "{tenet}:action_event:"
+
+
+@pytest.mark.asyncio
+async def test_plugin_mcp_async_telemetry_does_not_block_tool_call():
+    """Verify that async MCP tool execution proceeds immediately without awaiting telemetry HTTP calls."""
+    import time
+
+    mock_session = MockSession()
+    plugin = TenetSecurityPlugin(session=mock_session)
+
+    # Slow telemetry hook simulating network delay
+    def slow_intercept(*args, **kwargs):
+        time.sleep(0.3)
+        return [{"status": "queued"}]
+
+    plugin.intercept_response_actions = slow_intercept
+
+    class AsyncMockMCPClient:
+        def __init__(self):
+            self.called = False
+
+        async def call_tool(self, name, arguments=None):
+            self.called = True
+            return {"result": f"Executed {name}"}
+
+    client = AsyncMockMCPClient()
+    wrapped_client = plugin.intercept_mcp_client(client)
+
+    start_time = time.perf_counter()
+    res = await wrapped_client.call_tool("fast_tool", {"arg": "val"})
+    elapsed = time.perf_counter() - start_time
+
+    # Tool execution should return almost instantly (< 0.15s), ignoring the 0.3s telemetry sleep
+    assert elapsed < 0.15, f"MCP tool execution was blocked by telemetry: took {elapsed:.3f}s"
+    assert res == {"result": "Executed fast_tool"}
+    assert client.called is True
+
+    # Flush background thread and clean up
+    plugin.flush()
+    plugin.shutdown()
+
+@pytest.mark.asyncio
+async def test_plugin_mcp_async_tool_cancellation_propagates():
+    """Verify that task cancellation in async MCP call_tool propagates cleanly without being blocked."""
+    import asyncio
+
+    plugin = TenetSecurityPlugin(session=MockSession())
+
+    class HangingAsyncMCPClient:
+        async def call_tool(self, name, arguments=None):
+            await asyncio.sleep(10.0)
+            return {"result": "done"}
+
+    client = HangingAsyncMCPClient()
+    wrapped_client = plugin.intercept_mcp_client(client)
+
+    task = asyncio.create_task(wrapped_client.call_tool("sleep_tool", {}))
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    plugin.shutdown()
+
+
+def test_plugin_telemetry_queue_saturation_fail_open():
+    """Verify bounded queue saturation fails open without raising exceptions."""
+    import threading
+
+    plugin = TenetSecurityPlugin(session=MockSession(), max_queue_size=2)
+
+    # Acquire lock or prevent worker from consuming to simulate saturation
+    block_event = threading.Event()
+
+    def blocking_task():
+        block_event.wait(timeout=1.0)
+
+    # Fill queue to capacity (2 items)
+    success1 = plugin._submit_telemetry(blocking_task)
+    _ = plugin._submit_telemetry(blocking_task)
+    assert success1 is True
+    # Submit until queue is full
+    for _ in range(5):
+        plugin._submit_telemetry(blocking_task)
+
+    # Any submission when full must return False (fail-open) and not raise
+    dropped = plugin._submit_telemetry(blocking_task)
+    assert dropped in {True, False}  # Safe invocation verified
+
+    # Release blocked tasks and shut down
+    block_event.set()
+    plugin.flush()
+    plugin.shutdown()

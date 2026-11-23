@@ -24,8 +24,8 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from services.utils.logging_config import setup_logging
-from services.security import SecurityManager
-from services.utils.metrics import ACTION_OBSERVED_COUNT, ACTION_OLDEST_EVENT_AGE, ACTION_OVERFLOW_DRAINED, ACTION_OVERFLOW_DRAIN_FAILURES, ACTION_QUEUE_DEPTH, PrometheusMiddleware, increment_detection
+from services.security import SecurityManager, encode_action_event_key
+from services.utils.metrics import ACTION_OBSERVED_COUNT, ACTION_OLDEST_EVENT_AGE, ACTION_OVERFLOW_DRAINED, ACTION_OVERFLOW_DRAIN_FAILURES, ACTION_QUEUE_DEPTH, PrometheusMiddleware, get_bounded_provider, increment_detection
 from services.utils.env_validator import non_negative_float, port, positive_int, probability, validate_env_vars
 from prometheus_client import make_asgi_app
 logger = setup_logging(__name__)
@@ -960,7 +960,7 @@ async def _process_single_action_event(event_data: str) -> None:
     logger.info("Processing action event: %s (tool: %s)", event_id, event.get("tool_name"))
     tool_name = str(event.get("tool_name", "unknown"))[:64]
     provider = str(event.get("provider", "unknown"))
-    bounded_provider = provider if provider in {"openai", "anthropic", "gemini", "mcp"} else "other"
+    bounded_provider = get_bounded_provider(provider)
 
     event["verdict"] = "observed"
     event["observed_at"] = datetime.now(timezone.utc).isoformat()
@@ -970,7 +970,7 @@ async def _process_single_action_event(event_data: str) -> None:
     if redis_client:
         try:
             org_id = event.get("org_id")
-            event_key = f"{CLUSTER_TAG}:action_event:{org_id}:{event_id}" if org_id else f"{CLUSTER_TAG}:action_event:{event_id}"
+            event_key = encode_action_event_key(org_id, event_id, cluster_tag=CLUSTER_TAG)
             await redis_client.set(event_key, json.dumps(event), ex=86400)
             persisted = True
         except Exception:  # noqa: BLE001

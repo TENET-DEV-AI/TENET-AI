@@ -4,6 +4,8 @@ from .action_event import (
     ActionEvent,
     ActionExtractionError,
     canonical_json,
+    encode_action_event_key,
+    encode_action_event_prefix,
     sanitize_value,
     verify_hash,
 )
@@ -22,6 +24,8 @@ __all__ = [
     "AuthContext",
     "SecurityManager",
     "canonical_json",
+    "encode_action_event_key",
+    "encode_action_event_prefix",
     "extract_anthropic_tools",
     "extract_gemini_tools",
     "extract_mcp_tools",

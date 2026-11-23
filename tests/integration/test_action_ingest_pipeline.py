@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+
 from services.analyzer.app import (
     _drain_overflow_queue_step,
     _process_single_action_event,
@@ -1009,3 +1010,105 @@ def test_get_action_event_tenant_scoped_storage_lookup():
         assert response.status_code == 200
         assert response.json()["event_id"] == "act_scoped_123"
         assert response.json()["tool_name"] == "scoped_tool"
+
+
+def test_get_action_event_legacy_key_fallback_lookup():
+    """Verify get_action_event falls back to legacy unencoded key when scoped key not found."""
+    fake_redis = FakeActionRedis()
+    event_payload = {
+        "event_id": "legacy_act_999",
+        "org_id": "default-org",
+        "source_id": "agent-legacy",
+        "provider": "openai",
+        "tool_name": "legacy_tool",
+        "tool_args": {},
+        "status": "queued",
+    }
+    # Store strictly under legacy unscoped key {tenet}:action_event:legacy_act_999
+    fake_redis.store[f"{CLUSTER_TAG}:action_event:legacy_act_999"] = json.dumps(event_payload)
+
+    with patch("services.ingest.app.redis_client", fake_redis):
+        response = client.get("/v1/events/action/legacy_act_999", headers=AUTH_HEADERS)
+        assert response.status_code == 200
+        assert response.json()["event_id"] == "legacy_act_999"
+        assert response.json()["tool_name"] == "legacy_tool"
+
+
+def test_ingest_bounded_provider_metrics_and_payload_preservation():
+    """Verify provider label is bounded to 'other' in metrics while preserving original in payload."""
+    from services.utils.metrics import ACTION_INGEST_COUNT
+
+    fake_redis = FakeActionRedis()
+    initial_metric = ACTION_INGEST_COUNT.labels(service="ingest", provider="other", status="queued")._value.get()
+
+    event = ActionEvent(
+        source_id="agent-cardinality",
+        provider="custom_arbitrary_attacker_provider_xyz",
+        tool_name="test_tool",
+        tool_args={"arg": 1},
+    )
+
+    with patch("services.ingest.app.redis_client", fake_redis):
+        response = client.post(
+            "/v1/events/action",
+            headers=AUTH_HEADERS,
+            json=event.model_dump(),
+        )
+        assert response.status_code == 200
+
+        # Prometheus counter must increment with provider="other"
+        new_metric = ACTION_INGEST_COUNT.labels(service="ingest", provider="other", status="queued")._value.get()
+        assert new_metric == initial_metric + 1
+
+        # Redis storage must preserve the original raw provider string
+        event_key = f"{CLUSTER_TAG}:action_event:default-org:{event.event_id}"
+        stored_payload = json.loads(fake_redis.store[event_key])
+        assert stored_payload["provider"] == "custom_arbitrary_attacker_provider_xyz"
+
+
+def test_ingest_colon_delimited_org_and_event_isolation():
+    """Verify distinct colon-separated org_id and event_id pairs avoid Redis key collisions."""
+    fake_redis = FakeActionRedis()
+
+    class MockAuthCol1:
+        org_id = "org:1"
+        key_id = "key1"
+        role = "admin"
+
+    class MockAuthCol2:
+        org_id = "org"
+        key_id = "key2"
+        role = "admin"
+
+    event1 = ActionEvent(
+        event_id="evt",
+        source_id="agent1",
+        provider="openai",
+        tool_name="tool1",
+        tool_args={},
+    )
+
+    event2 = ActionEvent(
+        event_id="1:evt",
+        source_id="agent2",
+        provider="openai",
+        tool_name="tool2",
+        tool_args={},
+    )
+
+    with patch("services.ingest.app.redis_client", fake_redis):
+        with patch("services.ingest.app.security.require_auth", return_value=MockAuthCol1()):
+            res1 = client.post("/v1/events/action", headers=AUTH_HEADERS, json=event1.model_dump())
+            assert res1.status_code == 200
+
+        with patch("services.ingest.app.security.require_auth", return_value=MockAuthCol2()):
+            res2 = client.post("/v1/events/action", headers=AUTH_HEADERS, json=event2.model_dump())
+            assert res2.status_code == 200
+
+    # Keys in store must be escaped and distinct
+    expected_key1 = f"{CLUSTER_TAG}:action_event:org%3A1:evt"
+    expected_key2 = f"{CLUSTER_TAG}:action_event:org:1%3Aevt"
+    assert expected_key1 in fake_redis.store
+    assert expected_key2 in fake_redis.store
+    assert expected_key1 != expected_key2
+    assert len(fake_redis.store) == 2

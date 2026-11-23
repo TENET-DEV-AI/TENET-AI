@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -79,6 +80,28 @@ def sanitize_value(val: Any) -> Any:
 def verify_hash(event: ActionEvent) -> bool:
     """Standalone validator verifying the SHA-256 payload integrity hash."""
     return event.verify_hash()
+
+
+def encode_action_event_key(org_id: str | None, event_id: str, cluster_tag: str = "{tenet}") -> str:
+    """Construct an unambiguous Redis key for an action event.
+
+    Encodes org_id and event_id using URL percent-encoding so that delimiters
+    like ':' within identifiers cannot produce cross-tenant or cross-event key collisions.
+    Standard alphanumeric, hyphen, underscore, and UUID values remain identical to legacy keys.
+    """
+    clean_event_id = urllib.parse.quote(str(event_id).strip(), safe="-_.~")
+    if org_id:
+        clean_org_id = urllib.parse.quote(str(org_id).strip(), safe="-_.~")
+        return f"{cluster_tag}:action_event:{clean_org_id}:{clean_event_id}"
+    return f"{cluster_tag}:action_event:{clean_event_id}"
+
+
+def encode_action_event_prefix(org_id: str | None, cluster_tag: str = "{tenet}") -> str:
+    """Construct the unambiguous Redis key prefix for duplicate lookup in Lua scripts."""
+    if org_id and str(org_id).strip():
+        clean_org_id = urllib.parse.quote(str(org_id).strip(), safe="-_.~")
+        return f"{cluster_tag}:action_event:{clean_org_id}:"
+    return f"{cluster_tag}:action_event:"
 
 
 class ActionExtractionError(ValueError):
