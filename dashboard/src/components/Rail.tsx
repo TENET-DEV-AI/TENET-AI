@@ -5,6 +5,7 @@ interface RailProps {
   openCount: number;
   totalCount: number;
   userEmail: string;
+  userName?: string;
   userRole: string;
   mobileOpen: boolean;
   onNavigate: (view: View) => void;
@@ -12,19 +13,22 @@ interface RailProps {
   onCloseMobile: () => void;
 }
 
-const initials = (email: string) =>
-  email
-    .split('@')[0]
-    .split(/[._-]/)
-    .slice(0, 2)
-    .map(part => part.charAt(0).toUpperCase())
-    .join('') || 'SO';
+const initials = (email: string, name?: string) => {
+  const source = name?.trim() ? name.trim().split(/\s+/) : email.split('@')[0].split(/[._-]/);
+  return (
+    source
+      .slice(0, 2)
+      .map(part => part.charAt(0).toUpperCase())
+      .join('') || 'SO'
+  );
+};
 
 export function Rail({
   view,
   openCount,
   totalCount,
   userEmail,
+  userName,
   userRole,
   mobileOpen,
   onNavigate,
@@ -131,7 +135,9 @@ export function Rail({
 
       <div className="foot">
         <div className="user">
-          <span className="av">{initials(userEmail)}</span>
+          <span className="av" title={userName ?? userEmail}>
+            {initials(userEmail, userName)}
+          </span>
           <div style={{ minWidth: 0 }}>
             <div className="e" data-testid="user-email">
               {userEmail}

@@ -98,6 +98,35 @@ Rules:
 - Numbers carry units (`14 ms`, `3h 5m left`), never a bare figure.
 - Empty states say what will appear: "Waiting for events…", "Nothing in this view."
 
+## Sign-in
+
+The console is a restricted surface, so identity is the first screen, not a
+modal after it.
+
+- **Google Identity Services is the primary path.** The official button is
+  rendered with `theme: 'filled_black'` so it sits on the ink ground without
+  fighting the page — Google's branding rules require their button, so we theme
+  it rather than replace it.
+- **Local credentials remain** for self-hosted installs without an OAuth client
+  and for the e2e suite. When Google is configured the password form is folded
+  behind "Sign in with a password" — one primary path, not two competing ones.
+- **Sign-out is explicit.** Signing out clears the stored session and calls
+  `google.accounts.id.disableAutoSelect()`, so the next visit does not silently
+  reuse the Google account.
+- **Copy is plain about scope:** "Sign in with the Google account your
+  organisation issued you." No "Secure login", no "One-click access".
+
+### What the client checks, and what it must not
+
+The console decodes the ID token and checks `iss`, `aud`, `exp` and
+`email_verified` — enough to greet the analyst and keep the session in this tab.
+That is **not** authentication: a JWT is trivially forged in the browser.
+
+The API owns authorisation. It must verify the token against Google's keys on
+every request, then map the account to a role — allowed Workspace domain,
+analyst allowlist, whatever the deployment uses. A Google account proves who
+someone is; it does not prove they may read your events.
+
 ## Surfaces
 
 | Surface | Stack | Why |

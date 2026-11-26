@@ -5,7 +5,7 @@ import './styles/console.css';
 import './styles/product.css';
 
 import type { ChartFilterAction, FilterState, SecurityEvent, Stats, TimeRange } from './types/security';
-import { LoginView } from './components/LoginView';
+import { LoginView, type ConsoleUser } from './components/LoginView';
 import { AlertDetailModal } from './components/AlertDetailModal';
 import { Rail } from './components/Rail';
 import { TopBar } from './components/TopBar';
@@ -27,6 +27,7 @@ import {
 } from './utils/exportEvents';
 import type { Preset } from './components/FilterPanel';
 import { isOpen, rankForTriage } from './utils/alerts';
+import { disableGoogleAutoSelect } from './utils/google';
 
 export type View = 'overview' | 'triage' | 'feed' | 'health';
 
@@ -97,12 +98,14 @@ const VIEW_TITLES: Record<View, string> = {
 };
 
 export default function App() {
-  const [user, setUser] = useState<{ email: string; role: string; token: string } | null>(() => {
+  const [user, setUser] = useState<ConsoleUser | null>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       if (import.meta.env.DEV && params.get('auth') === 'skip') {
         return { email: 'analyst@tenet.ai', role: 'Senior SOC Responder', token: 'demo' };
       }
+      // A Google session is only trusted for this tab: the token expires and the
+      // API re-verifies it on every request.
       const stored = localStorage.getItem('tenet_soc_user');
       return stored ? JSON.parse(stored) : null;
     } catch {
@@ -221,6 +224,7 @@ export default function App() {
   }, []);
 
   const handleLogout = useCallback(() => {
+    disableGoogleAutoSelect();
     try {
       localStorage.removeItem('tenet_soc_user');
       const url = new URL(window.location.href);
@@ -468,6 +472,7 @@ export default function App() {
         openCount={openCount}
         totalCount={events.length}
         userEmail={user.email}
+        userName={user.name}
         userRole={user.role}
         mobileOpen={mobileNav}
         onNavigate={setView}

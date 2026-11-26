@@ -225,3 +225,15 @@
 .severity-key .vl{font-family:var(--f-mono);font-size:11px;color:var(--dim)}
 .severity-key .pc{font-family:var(--f-mono);font-size:9.5px;color:var(--faint);min-width:32px;text-align:right}
 @media(max-width:520px){.severity-charts{grid-template-columns:1fr}}
+
+/* ---------- Google sign-in ---------- */
+.google-signin{position:relative;min-height:44px;display:flex;align-items:center}
+.google-slot{display:flex;justify-content:flex-start;min-height:44px;align-items:center}
+.google-slot iframe{border-radius:6px}
+.google-skeleton{position:absolute;inset:0;border-radius:6px;background:var(--ink-3);
+  border:1px solid var(--line);animation:gisPulse 1.4s ease-in-out infinite}
+@keyframes gisPulse{0%,100%{opacity:.5}50%{opacity:.9}}
+.auth-divider{display:flex;align-items:center;gap:10px;margin:16px 0 14px;
+  font-family:var(--f-mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint)}
+.auth-divider::before,.auth-divider::after{content:"";height:1px;flex:1;background:var(--line)}
+@media(prefers-reduced-motion:reduce){.google-skeleton{animation:none}}

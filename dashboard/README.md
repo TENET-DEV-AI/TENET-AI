@@ -16,8 +16,26 @@ API_KEY=$(sed -n 's/^API_KEY=//p' ../.env); printf 'VITE_API_KEY=%s\n' "$API_KEY
 npm run dev          # http://localhost:5174
 ```
 
-Demo sign-in: `analyst@tenet.ai` / `password123`. With no backend running the
-console falls back to `src/data/mockEvents.ts`, so it is usable offline.
+## Sign-in
+
+Analysts sign in with Google (Identity Services). Set the OAuth *web* client id
+in `dashboard/.env.local`:
+
+```bash
+printf 'VITE_GOOGLE_CLIENT_ID=%s\n' '<id>.apps.googleusercontent.com' > .env.local
+```
+
+Authorised JavaScript origins must include `http://localhost:5174` for dev and
+your console origin in production. Without the variable the console falls back
+to the local credential form (`analyst@tenet.ai` / `password123`), which is what
+the e2e suite uses.
+
+The console decodes the ID token to greet the analyst; **the API must verify the
+token server-side and decide who may read events.** A Google account is proof of
+identity, not of authorisation. See [`../docs/DESIGN_SYSTEM.md`](../docs/DESIGN_SYSTEM.md#sign-in).
+
+With no backend running the console falls back to `src/data/mockEvents.ts`, so it
+is usable offline.
 
 ## Views
 
@@ -42,7 +60,8 @@ src/
     TriageView.tsx        queue + filters + detail
     DetailPane.tsx        investigation tabs and workflow actions
     AlertDetailModal.tsx  full-screen investigation
-    LoginView.tsx         analyst sign-in
+    LoginView.tsx         analyst sign-in (Google + local credentials)
+    GoogleSignIn.tsx      Google Identity Services button
     charts/               recharts panels, one skin
   styles/console.css      design tokens + console chrome
   styles/product.css      product-only surfaces (sign-in, modal, filters, charts)

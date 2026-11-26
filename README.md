@@ -66,9 +66,23 @@ API_KEY=$(sed -n 's/^API_KEY=//p' ../.env); printf 'VITE_API_KEY=%s\n' "$API_KEY
 npm run dev                    # http://localhost:5174
 ```
 
-Demo credentials in the console are `analyst@tenet.ai` / `password123`. Vite
-inlines `VITE_API_KEY` into the browser bundle, so treat the dev console as a
-trusted-network tool — never deploy it with a production key.
+### Console sign-in
+
+Analysts sign in with Google. Add the OAuth web client id to `dashboard/.env.local`:
+
+```bash
+printf 'VITE_GOOGLE_CLIENT_ID=%s\n' '<id>.apps.googleusercontent.com' > dashboard/.env.local
+```
+
+Authorised JavaScript origins: `http://localhost:5174` for dev, your console
+origin in production. Without it the console falls back to the local credential
+form (`analyst@tenet.ai` / `password123`).
+
+A Google sign-in proves who someone is — not that they may read your events. The
+API is the gate: verify the ID token server-side and allowlist the accounts or
+Workspace domain. Likewise, Vite inlines `VITE_API_KEY` into the browser bundle,
+so treat the dev console as a trusted-network tool and never deploy it with a
+production key.
 
 The landing page runs on its own:
 
