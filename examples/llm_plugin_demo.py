@@ -15,7 +15,7 @@ from services.utils.logging_config import setup_logging
 
 logger = setup_logging(__name__)
 
-from tenet_plugin import TenetSecurityPlugin
+from teneo_ai import TenetSecurityPlugin
 
 
 class DemoLLM:

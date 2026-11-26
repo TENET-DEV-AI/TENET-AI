@@ -56,8 +56,7 @@
     <button class="theme" id="themeBtn" aria-label="Switch colour scheme" title="Paper / ink">
       <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.4a7.6 7.6 0 0 1 0 15.2Z" fill="currentColor"/></svg>
     </button>
-    <!-- CTA copy assumes the package is published under this name; confirm before launch. -->
-    <a class="cta" href="#install">pip install tenet-ai</a>
+    <a class="cta" href="#install">pip install teneo-ai</a>
     <button class="burger" id="burger" type="button" aria-label="Open sections" aria-expanded="false" aria-controls="mnav">
       <span></span><span></span>
     </button>
@@ -94,7 +93,7 @@
         <p class="lede" data-rv>TENET AI sits between your application and any LLM. Every prompt is inspected before it reaches the model — prompt injection, jailbreaks and data extraction are stopped in under ten milliseconds, inside your own cluster.</p>
 
         <div class="actions" data-rv>
-          <a class="btn" href="#install"><span>Install tenet-ai</span>
+          <a class="btn" href="#install"><span>Install teneo-ai</span>
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v11M3.5 9l4.5 4.5L12.5 9"/></svg>
           </a>
           <a class="tlink" href="#bench">Try a payload →</a>
@@ -425,7 +424,7 @@
       </div>
 
       <div class="sch-legend">
-        <div class="li"><div class="n">01</div><h4>Intercept</h4><p>A single <span class="mono lc">tenet.check()</span> call, awaited, before any model client is touched.</p></div>
+        <div class="li"><div class="n">01</div><h4>Intercept</h4><p>A single <span class="mono lc">guard.secure_call()</span> before any model client is touched.</p></div>
         <div class="li"><div class="n">02</div><h4>Decide</h4><p>Three engines, one policy. Block, sanitize or allow — and always record why.</p></div>
         <div class="li"><div class="n">03</div><h4>Learn</h4><p>Analyst verdicts become signatures, and signatures ship to every node overnight.</p></div>
       </div>
@@ -603,16 +602,16 @@
         <h2>Four lines. <em>No proxy.</em></h2>
       </div>
       <div class="sec-note" data-rv>
-        <p>Python 3.11+, async-first, fully typed. It runs inside your process, so there is no sidecar to deploy and no extra network hop to lose.</p>
+        <p>Python 3.12+, fully typed, one dependency. It runs inside your process, so there is no sidecar to deploy and no extra network hop to lose.</p>
       </div>
     </div>
 
     <div class="install">
       <div data-rv>
         <div class="steps">
-          <div class="step"><span class="n">01</span><div><h4>Install</h4><p><code>pip install tenet-ai</code> — three dependencies, 1.2&nbsp;MB, no GPU.</p></div></div>
-          <div class="step"><span class="n">02</span><div><h4>Initialise</h4><p><code>tenet init</code> pulls the threat database and writes a local config.</p></div></div>
-          <div class="step"><span class="n">03</span><div><h4>Intercept</h4><p>One awaited call before your model client. If it returns <code>blocked</code>, stop.</p></div></div>
+          <div class="step"><span class="n">01</span><div><h4>Install</h4><p><code>pip install teneo-ai</code> — the client, no GPU, no sidecar.</p></div></div>
+          <div class="step"><span class="n">02</span><div><h4>Initialise</h4><p>Give the guard your ingest URL and API key.</p></div></div>
+          <div class="step"><span class="n">03</span><div><h4>Intercept</h4><p>One call before your model client. If it comes back <code>blocked</code>, stop.</p></div></div>
           <div class="step"><span class="n">04</span><div><h4>Watch</h4><p>Point the console at your cluster and leave it running.</p></div></div>
         </div>
         <p class="small" style="margin-top:20px;max-width:44ch">Works with FastAPI, Django and Flask; with LangChain and LlamaIndex; with OpenAI, Anthropic, Cohere, Ollama and anything speaking the OpenAI wire format.</p>
@@ -621,25 +620,28 @@
       <div class="darkplate" data-rv>
         <div class="hd"><span>integration_example.py</span><span class="sp"></span><span class="cpy" id="cpy">copy</span></div>
 <pre><span class="cm"># 1. install &amp; import</span>
-<span class="kw">import</span> tenet_ai
+<span class="kw">from</span> teneo_ai <span class="kw">import</span> TenetSecurityPlugin
 
 <span class="cm"># 2. initialise</span>
-tenet = tenet_ai.<span class="fn">Client</span>(api_key=<span class="st">"your-key"</span>)
-
-<span class="cm"># 3. intercept, before any model call</span>
-result = tenet.<span class="fn">check</span>(
-    prompt=user_input,
-    user_id=<span class="st">"u-123"</span>,
-    session=<span class="st">"sess_9f21ac"</span>,
+guard = <span class="fn">TenetSecurityPlugin</span>(
+    api_url=<span class="st">"http://localhost:8000"</span>,
+    api_key=<span class="st">"your-key"</span>,
+    fail_mode=<span class="st">"closed"</span>,   <span class="cm"># block if TENET is unreachable</span>
 )
 
-<span class="kw">if</span> result.blocked:
-    <span class="kw">return</span> <span class="st">"Blocked"</span>   <span class="cm"># 4.2 ms, before the model</span>
+<span class="cm"># 3. intercept, before any model call</span>
+result = guard.<span class="fn">secure_call</span>(
+    prompt=user_input,
+    model=<span class="st">"gpt-4"</span>,
+    llm_callable=openai.chat,          <span class="cm"># runs only when allowed</span>
+    llm_kwargs={<span class="st">"prompt"</span>: user_input},
+)
 
-<span class="cm"># 4. safe — call any provider</span>
-response = openai.<span class="fn">chat</span>(user_input)
-response = anthropic.<span class="fn">message</span>(user_input)
-response = ollama.<span class="fn">generate</span>(user_input)</pre>
+<span class="kw">if</span> result[<span class="st">"status"</span>] == <span class="st">"blocked"</span>:
+    <span class="kw">return</span> <span class="st">"Blocked"</span>   <span class="cm"># before the model is called</span>
+
+<span class="cm"># 4. safe — any provider, any framework</span>
+response = result[<span class="st">"llm_response"</span>]</pre>
       </div>
     </div>
   </div>

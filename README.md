@@ -44,7 +44,27 @@ page with a working payload test bench that runs the rule engine in your browser
 
 ![Landing page](docs/screenshots/landing-hero.jpg)
 
-## Quick start
+## Install
+
+**Client SDK** — the guard you put in front of your model calls:
+
+```bash
+pip install teneo-ai
+```
+
+```python
+from teneo_ai import TenetSecurityPlugin
+
+guard = TenetSecurityPlugin(api_url="http://localhost:8000", api_key="...", fail_mode="closed")
+result = guard.secure_call(prompt=user_input, model="gpt-4", llm_callable=model)
+if result["status"] == "blocked":
+    return "Blocked"
+```
+
+The distribution ships the client only. Publishing is tag-driven
+(`.github/workflows/publish.yml`), so a release lands on PyPI when you push `v*`.
+
+**Full stack** — services, console and detector:
 
 ```bash
 git clone https://github.com/TENET-DEV-AI/TENET-AI.git
@@ -139,7 +159,7 @@ python scripts/run_benchmark.py --dataset ./data/your_dataset.json
 
 ```
 services/        ingest and analyzer services
-tenet_plugin/    framework-agnostic client plugin
+teneo_ai/        client SDK — pip install teneo-ai
 dashboard/       SOC console (React + Vite + TypeScript)
 landing/         marketing site (static HTML/CSS/TS, built by Vite)
 models/          trained model artefacts

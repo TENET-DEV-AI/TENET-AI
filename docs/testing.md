@@ -207,13 +207,13 @@ pytest --ignore=tests/integration/ -v
 
 ```bash
 # Generate coverage report (terminal output)
-pytest tests/unit/ --cov=services --cov=scripts --cov=tenet_plugin -v
+pytest tests/unit/ --cov=services --cov=scripts --cov=teneo_ai -v
 
 # Generate HTML coverage report
-pytest tests/unit/ --cov=services --cov=scripts --cov=tenet_plugin --cov-report=html -v
+pytest tests/unit/ --cov=services --cov=scripts --cov=teneo_ai --cov-report=html -v
 
 # Generate coverage report with branch coverage
-pytest tests/unit/ --cov=services --cov=scripts --cov=tenet_plugin --cov-report=term-missing -v
+pytest tests/unit/ --cov=services --cov=scripts --cov=teneo_ai --cov-report=term-missing -v
 ```
 
 ### View HTML Coverage Report
@@ -246,7 +246,7 @@ tests/
 │   ├── test_logging.py        # Tests for logging utilities
 │   ├── test_logging_config.py # Tests for logging config
 │   ├── test_model_artifacts.py # Tests for model validation
-│   ├── test_tenet_plugin.py   # Tests for plugin client
+│   ├── test_teneo_ai.py   # Tests for plugin client
 │   └── test_training.py       # Tests for model training
 └── integration/               # Integration tests
     ├── __init__.py
@@ -591,7 +591,7 @@ pytest --version
 
 ```bash
 # ✅ Correct
-pytest tests/unit/ --cov=services --cov=scripts --cov=tenet_plugin --cov-report=term-missing -v
+pytest tests/unit/ --cov=services --cov=scripts --cov=teneo_ai --cov-report=term-missing -v
 
 # ❌ Wrong
 pytest tests/unit/ --cov=.

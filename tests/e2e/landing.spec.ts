@@ -17,7 +17,7 @@ test.describe('Landing Page E2E Suite', () => {
     await expect(wordmark).toContainText('defensive middleware');
 
     await expect(page.locator('.top .issue')).toContainText('No. 04');
-    await expect(page.locator('.top .cta')).toContainText('pip install tenet-ai');
+    await expect(page.locator('.top .cta')).toContainText('pip install teneo-ai');
   });
 
   test('navigates to each section from the masthead', async ({ page }) => {
@@ -44,7 +44,7 @@ test.describe('Landing Page E2E Suite', () => {
 
   test('hero calls to action reach install and the test bench', async ({ page }) => {
     const installCta = page.locator('.hero .actions a.btn');
-    await expect(installCta).toContainText('Install tenet-ai');
+    await expect(installCta).toContainText('Install teneo-ai');
     await installCta.click();
     await expect(page.locator('#install')).toBeInViewport();
 
