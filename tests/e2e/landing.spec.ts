@@ -8,105 +8,99 @@ test.describe('Landing Page E2E Suite', () => {
     await page.waitForLoadState('domcontentloaded');
   });
 
-  test('should load landing page with correct title and branding', async ({ page }) => {
+  test('loads with the masthead identity and issue line', async ({ page }) => {
     await expect(page).toHaveTitle(/TENET/i);
-    const brand = page.locator('.brand-name');
-    await expect(brand).toBeVisible();
-    await expect(brand).toContainText('TENET AI');
 
-    const versionBadge = page.locator('.brand-badge');
-    await expect(versionBadge).toBeVisible();
-    await expect(versionBadge).toHaveText('v0.1');
+    const wordmark = page.locator('.top .wordmark');
+    await expect(wordmark).toBeVisible();
+    await expect(wordmark).toContainText('TENET');
+    await expect(wordmark).toContainText('defensive middleware');
 
-    const liveBadge = page.locator('.live-badge');
-    await expect(liveBadge).toBeVisible();
-    await expect(liveBadge).toContainText('LIVE');
+    await expect(page.locator('.top .issue')).toContainText('No. 04');
+    await expect(page.locator('.top .cta')).toContainText('pip install tenet-ai');
   });
 
-  test('should navigate to sections via desktop navbar links', async ({ page }) => {
-    const navItems = [
-      { id: 'pipeline', label: 'Pipeline' },
-      { id: 'features', label: 'Features' },
-      { id: 'demo', label: 'Sandbox' },
-      { id: 'compare', label: 'Comparison' },
-      { id: 'threats', label: 'Case Studies' },
-      { id: 'download', label: 'Install' },
+  test('navigates to each section from the masthead', async ({ page }) => {
+    const sections = [
+      { id: 'classes', label: 'Classes' },
+      { id: 'product', label: 'Console' },
+      { id: 'architecture', label: 'Architecture' },
+      { id: 'bench', label: 'Test bench' },
+      { id: 'reports', label: 'Reports' },
+      { id: 'install', label: 'Install' },
     ];
 
-    for (const item of navItems) {
-      const link = page.locator(`.nav a[href="#${item.id}"]`);
-      await expect(link).toBeVisible();
-      await link.click();
+    for (const section of sections) {
+      // The masthead tucks away once you scroll; bring it back before each click.
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'auto' }));
+      await expect(page.locator('.top')).not.toHaveClass(/hide/);
 
-      const targetSection = page.locator(`#${item.id}`);
-      await expect(targetSection).toBeInViewport();
+      const link = page.locator(`.top .top-in nav a[href="#${section.id}"]`);
+      await expect(link).toHaveText(section.label);
+      await link.click();
+      await expect(page.locator(`#${section.id}`)).toBeInViewport();
     }
   });
 
-  test('should test hero and CTA buttons navigation', async ({ page }) => {
-    // Hero Primary CTA -> scrolls to #download
-    const getStartedBtn = page.locator('.hero-actions a.btn-primary');
-    await expect(getStartedBtn).toBeVisible();
-    await expect(getStartedBtn).toContainText('Get Started Free');
-    await getStartedBtn.click();
-    await expect(page.locator('#download')).toBeInViewport();
+  test('hero calls to action reach install and the test bench', async ({ page }) => {
+    const installCta = page.locator('.hero .actions a.btn');
+    await expect(installCta).toContainText('Install tenet-ai');
+    await installCta.click();
+    await expect(page.locator('#install')).toBeInViewport();
 
-    // Hero Secondary CTA -> External GitHub link
-    const githubBtn = page.locator('.hero-actions a[href*="github.com"]');
-    await expect(githubBtn).toBeVisible();
-    await expect(githubBtn).toHaveAttribute('target', '_blank');
-    await expect(githubBtn).toHaveAttribute('href', 'https://github.com/TENET-DEV-AI/TENET-AI');
-
-    // Bottom CTA section button
-    const downloadSdkBtn = page.locator('.cta-btns a.btn-primary');
-    await expect(downloadSdkBtn).toBeVisible();
-    await expect(downloadSdkBtn).toContainText('Download SDK');
-    await downloadSdkBtn.click();
-    await expect(page.locator('#download')).toBeInViewport();
+    const benchLink = page.locator('.hero .actions a.tlink');
+    await expect(benchLink).toContainText('Try a payload');
+    await benchLink.click();
+    await expect(page.locator('#bench')).toBeInViewport();
   });
 
-  test('should interact with Interactive Threat Sandbox tabs', async ({ page }) => {
-    const sandboxSection = page.locator('#demo');
-    await sandboxSection.scrollIntoViewIfNeeded();
-    await expect(sandboxSection).toBeVisible();
+  test('colour scheme toggle switches paper and ink', async ({ page }) => {
+    const html = page.locator('html');
+    const toggle = page.locator('#themeBtn');
+    await expect(toggle).toBeVisible();
 
-    // Tab list of attacks
-    const attackTabs = page.locator('.demo-attack-btn');
-    await expect(attackTabs).toHaveCount(4);
+    const before = await html.getAttribute('data-theme');
+    await toggle.click();
+    const after = await html.getAttribute('data-theme');
 
-    // Click Jailbreak tab
-    const jailbreakTab = attackTabs.filter({ hasText: 'Jailbreak' });
-    await jailbreakTab.click();
-    await expect(jailbreakTab).toHaveAttribute('aria-selected', 'true');
-
-    // Click Data Extraction tab
-    const extractionTab = attackTabs.filter({ hasText: 'Data Extraction' });
-    await extractionTab.click();
-    await expect(extractionTab).toHaveAttribute('aria-selected', 'true');
-
-    // Click Prompt Injection tab
-    const injectionTab = attackTabs.filter({ hasText: 'Prompt Injection' });
-    await injectionTab.click();
-    await expect(injectionTab).toHaveAttribute('aria-selected', 'true');
+    expect(after).not.toBe(before);
+    expect(['light', 'dark']).toContain(after);
+    await expect(toggle).toHaveAttribute('aria-pressed', after === 'dark' ? 'true' : 'false');
   });
 
-  test('should toggle mobile navigation menu on small viewports', async ({ page }) => {
+  test('test bench scores a payload against the local rule engine', async ({ page }) => {
+    const bench = page.locator('#bench');
+    await bench.scrollIntoViewIfNeeded();
+
+    const presets = page.locator('.bench-btn');
+    await expect(presets).toHaveCount(5);
+
+    // Choosing a preset fills the payload and produces a verdict.
+    const jailbreak = presets.filter({ hasText: 'Jailbreak' });
+    await jailbreak.click();
+    await expect(jailbreak).toHaveAttribute('aria-pressed', 'true');
+
+    const verdict = page.locator('#vAction');
+    await expect(verdict).toHaveText(/Blocked|Flagged|Allowed/, { timeout: 10000 });
+    await expect(page.locator('#vRisk')).not.toHaveText('—');
+    await expect(page.locator('#pInput')).toHaveValue(/Do Anything Now/);
+  });
+
+  test('opens and closes the mobile section sheet', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 667 });
 
-    const hamburgerBtn = page.locator('.hamburger-btn');
-    await expect(hamburgerBtn).toBeVisible();
+    const burger = page.locator('#burger');
+    await expect(burger).toBeVisible();
+    await expect(burger).toHaveAttribute('aria-expanded', 'false');
 
-    // Open mobile menu
-    await hamburgerBtn.click();
-    const mobileMenu = page.locator('.mobile-menu');
-    await expect(mobileMenu).toHaveClass(/open/);
+    await burger.click();
+    const sheet = page.locator('#mnav');
+    await expect(sheet).toBeVisible();
+    await expect(sheet).toHaveClass(/open/);
+    await expect(burger).toHaveAttribute('aria-expanded', 'true');
 
-    // Test navigation item in mobile drawer
-    const mobileNavLink = page.locator('.mobile-menu-link[href="#features"]');
-    await expect(mobileNavLink).toBeVisible();
-    await mobileNavLink.click();
-
-    // Drawer should close after clicking link
-    await expect(mobileMenu).not.toHaveClass(/open/);
+    await sheet.locator('a[href="#product"]').click();
+    await expect(sheet).not.toHaveClass(/open/);
+    await expect(page.locator('#product')).toBeInViewport();
   });
 });
