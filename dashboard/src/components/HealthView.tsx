@@ -1,5 +1,6 @@
 import type { SecurityEvent, Stats } from '../types/security';
 import { HealthPanel } from './HealthPanel';
+import { SignInPanel } from './SignInPanel';
 
 interface HealthViewProps {
   health: { ingest: boolean; analyzer: boolean };
@@ -58,6 +59,27 @@ export function HealthView({ health, stats, events }: HealthViewProps) {
               <dt>Detector</dt>
               <dd>prompt-injection-v4</dd>
             </dl>
+          </div>
+        </section>
+      </div>
+      <div className="grid2">
+        <SignInPanel />
+        <section className="panel">
+          <div className="hd">
+            <h2>Why we log it</h2>
+            <span className="lbl">operator note</span>
+          </div>
+          <div className="bd">
+            <p className="hint" style={{ lineHeight: 1.75 }}>
+              The console is restricted, so every successful sign-in is appended to a server-side
+              log: email, provider, role and time — nothing else, no IP and no prompt content.
+              It gives you a count of who uses the console without a third-party script in the
+              browser.
+            </p>
+            <p className="hint" style={{ marginTop: 10, lineHeight: 1.75 }}>
+              Switch it off with <code>SIGNIN_LOG_ENABLED=false</code> on the ingest service. If you
+              use this list for marketing, check what consent your jurisdiction requires.
+            </p>
           </div>
         </section>
       </div>

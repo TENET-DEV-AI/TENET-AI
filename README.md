@@ -49,11 +49,11 @@ page with a working payload test bench that runs the rule engine in your browser
 **Client SDK** — the guard you put in front of your model calls:
 
 ```bash
-pip install teneo-ai
+pip install tenet-firewall
 ```
 
 ```python
-from teneo_ai import TenetSecurityPlugin
+from tenet_firewall import TenetSecurityPlugin
 
 guard = TenetSecurityPlugin(api_url="http://localhost:8000", api_key="...", fail_mode="closed")
 result = guard.secure_call(prompt=user_input, model="gpt-4", llm_callable=model)
@@ -100,7 +100,12 @@ form (`analyst@tenet.ai` / `password123`).
 
 A Google sign-in proves who someone is — not that they may read your events. The
 API is the gate: verify the ID token server-side and allowlist the accounts or
-Workspace domain. Likewise, Vite inlines `VITE_API_KEY` into the browser bundle,
+Workspace domain.
+
+Each sign-in is appended to a small server-side log (email, provider, role, time
+— no IP, no prompts) and the console shows the seven-day count in System health.
+`SIGNIN_LOG_ENABLED=false` turns it off; see [docs/signin-log.md](docs/signin-log.md)
+for what it stores and the consent question before using it for outreach. Likewise, Vite inlines `VITE_API_KEY` into the browser bundle,
 so treat the dev console as a trusted-network tool and never deploy it with a
 production key.
 
@@ -159,7 +164,7 @@ python scripts/run_benchmark.py --dataset ./data/your_dataset.json
 
 ```
 services/        ingest and analyzer services
-teneo_ai/        client SDK — pip install teneo-ai
+tenet_firewall/        client SDK — pip install tenet-firewall
 dashboard/       SOC console (React + Vite + TypeScript)
 landing/         marketing site (static HTML/CSS/TS, built by Vite)
 models/          trained model artefacts

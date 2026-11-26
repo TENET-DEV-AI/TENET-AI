@@ -1,6 +1,6 @@
 """Unit tests for framework-agnostic TENET plugin."""
 
-from teneo_ai import TenetSecurityPlugin, TenetPluginError
+from tenet_firewall import TenetSecurityPlugin, TenetPluginError
 
 
 class DummyResponse:

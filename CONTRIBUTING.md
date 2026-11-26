@@ -130,7 +130,7 @@ For detailed testing instructions, see [docs/testing.md](docs/testing.md).
 pytest tests/unit/ -v
 
 # Run tests with coverage
-pytest tests/unit/ --cov=services --cov=scripts --cov=teneo_ai --cov-report=term-missing -v
+pytest tests/unit/ --cov=services --cov=scripts --cov=tenet_firewall --cov-report=term-missing -v
 
 # Run a specific test file
 pytest tests/unit/test_analyzer.py -v

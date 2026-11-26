@@ -73,7 +73,7 @@ export function GoogleSignIn({ clientId, onSignedIn, onError, onUnavailable }: G
           text: 'continue_with',
           shape: 'rectangular',
           logo_alignment: 'left',
-          width: 320,
+          width: 356, // fills the 404px sign-in card (24px padding each side)
         });
         setStatus('ready');
       })

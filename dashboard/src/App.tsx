@@ -26,6 +26,7 @@ import {
   type ExportFormat,
 } from './utils/exportEvents';
 import type { Preset } from './components/FilterPanel';
+import { API_BASE, API_KEY } from './config';
 import { isOpen, rankForTriage } from './utils/alerts';
 import { disableGoogleAutoSelect } from './utils/google';
 
@@ -46,8 +47,6 @@ const EMPTY_FILTERS: FilterState = {
   hourTo: '',
 };
 
-const API_BASE = 'http://localhost:8000';
-const API_KEY = import.meta.env.VITE_API_KEY || '';
 const PRESETS_KEY = 'tenet_filter_presets';
 
 function filtersToURL(filters: FilterState): void {

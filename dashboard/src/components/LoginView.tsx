@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { GoogleSignIn } from './GoogleSignIn';
 import type { GoogleClaims } from '../utils/google';
+import { recordSignIn } from '../utils/signinLog';
 
 export interface ConsoleUser {
   email: string;
@@ -40,6 +41,8 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
   const handleGoogle = useCallback(
     (claims: GoogleClaims, idToken: string) => {
       setError(null);
+      // Best-effort: appends to the server-side sign-in log, never blocks entry.
+      void recordSignIn(claims.email, 'google', 'SOC Analyst');
       onLoginSuccess({
         email: claims.email,
         name: claims.name,
@@ -76,6 +79,7 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
     setIsLoading(true);
     setTimeout(() => {
       setIsLoading(false);
+      void recordSignIn(username.trim(), 'password', role);
       onLoginSuccess({ email: username.trim(), role, token: `tenet_token_${Date.now()}` });
     }, 250);
   };
@@ -126,7 +130,7 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
           <div className="hd">
             <span className="badge">Restricted · SOC portal</span>
             <h1>TENET AI Console</h1>
-            <p className="hint" style={{ marginTop: 8 }}>
+            <p className="hint" style={{ marginTop: 8, lineHeight: 1.65 }}>
               {googleEnabled
                 ? 'Sign in with the Google account your organisation issued you.'
                 : 'Authenticate with your analyst credentials to inspect intercepted LLM events.'}
@@ -152,13 +156,22 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
                 onUnavailable={handleGoogleUnavailable}
               />
 
+              <p className="help">
+                Signing in records your email and the time, for access auditing. Trouble signing in?
+                Ask your SOC lead to add your account, or{' '}
+                <a href="https://github.com/TENET-DEV-AI/TENET-AI/issues" target="_blank" rel="noreferrer">
+                  report a problem
+                </a>
+                .
+              </p>
+
               <div className="auth-divider" role="presentation">
-                <span>or use analyst credentials</span>
+                <span>or</span>
               </div>
 
               {!showCredentials && (
-                <button className="btn ghost" type="button" onClick={() => setShowCredentials(true)}>
-                  Sign in with a password
+                <button className="disclosure" type="button" onClick={() => setShowCredentials(true)}>
+                  Use analyst credentials
                 </button>
               )}
             </>
@@ -213,19 +226,21 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
                 </svg>
               </button>
 
-              <button
-                className="btn ghost"
-                type="button"
-                data-testid="login-demo-credentials-btn"
-                onClick={fillDemo}
-              >
-                Fill demo credentials
-              </button>
+              {import.meta.env.DEV && (
+                <button
+                  className="btn ghost"
+                  type="button"
+                  data-testid="login-demo-credentials-btn"
+                  onClick={fillDemo}
+                >
+                  Fill demo credentials
+                </button>
+              )}
             </form>
           )}
 
           <div className="foot">
-            <span>MIT · self-hosted</span>
+            <span>console 0.2.0 · MIT</span>
             <span>{googleEnabled ? 'google identity' : 'local accounts'}</span>
           </div>
         </div>

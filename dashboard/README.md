@@ -34,6 +34,9 @@ The console decodes the ID token to greet the analyst; **the API must verify the
 token server-side and decide who may read events.** A Google account is proof of
 identity, not of authorisation. See [`../docs/DESIGN_SYSTEM.md`](../docs/DESIGN_SYSTEM.md#sign-in).
 
+Sign-ins are recorded server-side by the ingest service and counted in **System
+health** (`/v1/signins/stats`). See [`../docs/signin-log.md`](../docs/signin-log.md).
+
 With no backend running the console falls back to `src/data/mockEvents.ts`, so it
 is usable offline.
 

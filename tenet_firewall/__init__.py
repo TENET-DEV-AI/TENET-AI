@@ -1,6 +1,6 @@
 """TENET AI — client SDK for the TENET defensive middleware.
 
-    from teneo_ai import TenetSecurityPlugin
+    from tenet_firewall import TenetSecurityPlugin
 
     guard = TenetSecurityPlugin(api_url="http://localhost:8000", api_key="...")
     result = guard.secure_call(prompt=user_input, model="gpt-4", llm_callable=model)

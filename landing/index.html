@@ -56,7 +56,7 @@
     <button class="theme" id="themeBtn" aria-label="Switch colour scheme" title="Paper / ink">
       <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.4a7.6 7.6 0 0 1 0 15.2Z" fill="currentColor"/></svg>
     </button>
-    <a class="cta" href="#install">pip install teneo-ai</a>
+    <a class="cta" href="#install">pip install tenet-firewall</a>
     <button class="burger" id="burger" type="button" aria-label="Open sections" aria-expanded="false" aria-controls="mnav">
       <span></span><span></span>
     </button>
@@ -93,7 +93,7 @@
         <p class="lede" data-rv>TENET AI sits between your application and any LLM. Every prompt is inspected before it reaches the model — prompt injection, jailbreaks and data extraction are stopped in under ten milliseconds, inside your own cluster.</p>
 
         <div class="actions" data-rv>
-          <a class="btn" href="#install"><span>Install teneo-ai</span>
+          <a class="btn" href="#install"><span>Install tenet-firewall</span>
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v11M3.5 9l4.5 4.5L12.5 9"/></svg>
           </a>
           <a class="tlink" href="#bench">Try a payload →</a>
@@ -609,7 +609,7 @@
     <div class="install">
       <div data-rv>
         <div class="steps">
-          <div class="step"><span class="n">01</span><div><h4>Install</h4><p><code>pip install teneo-ai</code> — the client, no GPU, no sidecar.</p></div></div>
+          <div class="step"><span class="n">01</span><div><h4>Install</h4><p><code>pip install tenet-firewall</code> — the client, no GPU, no sidecar.</p></div></div>
           <div class="step"><span class="n">02</span><div><h4>Initialise</h4><p>Give the guard your ingest URL and API key.</p></div></div>
           <div class="step"><span class="n">03</span><div><h4>Intercept</h4><p>One call before your model client. If it comes back <code>blocked</code>, stop.</p></div></div>
           <div class="step"><span class="n">04</span><div><h4>Watch</h4><p>Point the console at your cluster and leave it running.</p></div></div>
@@ -620,7 +620,7 @@
       <div class="darkplate" data-rv>
         <div class="hd"><span>integration_example.py</span><span class="sp"></span><span class="cpy" id="cpy">copy</span></div>
 <pre><span class="cm"># 1. install &amp; import</span>
-<span class="kw">from</span> teneo_ai <span class="kw">import</span> TenetSecurityPlugin
+<span class="kw">from</span> tenet_firewall <span class="kw">import</span> TenetSecurityPlugin
 
 <span class="cm"># 2. initialise</span>
 guard = <span class="fn">TenetSecurityPlugin</span>(
