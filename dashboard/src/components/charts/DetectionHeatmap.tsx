@@ -10,12 +10,13 @@ interface Props {
   onFilter: (action: ChartFilterAction) => void;
 }
 
-/** Color-blind safe blue scale for heat intensity */
+/** Ember intensity scale — the one accent, used only for threat volume. */
 function heatColor(intensity: number): string {
-  if (intensity <= 0) return '#1a1a1f';
-  const r = Math.round(26 + (0 - 26) * intensity);
-  const g = Math.round(26 + (114 - 26) * intensity);
-  const b = Math.round(31 + (178 - 31) * intensity);
+  if (intensity <= 0) return '#171310';
+  const t = Math.min(1, Math.max(0, intensity));
+  const r = Math.round(34 + (225 - 34) * t);
+  const g = Math.round(28 + (89 - 28) * t);
+  const b = Math.round(24 + (60 - 24) * t);
   return `rgb(${r}, ${g}, ${b})`;
 }
 

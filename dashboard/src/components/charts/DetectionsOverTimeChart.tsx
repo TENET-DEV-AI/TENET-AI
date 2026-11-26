@@ -29,7 +29,7 @@ function summaryText(data: TimeBucket[]): string {
 }
 
 export function DetectionsOverTimeChart({ data, range, onRangeChange, onFilter }: Props) {
-  const [chartType, setChartType] = useState<'bar' | 'line'>('bar');
+  const [chartType, setChartType] = useState<'bar' | 'line'>('line');
 
   const handleClick = (payload: TimeBucket) => {
     onFilter({
@@ -51,7 +51,7 @@ export function DetectionsOverTimeChart({ data, range, onRangeChange, onFilter }
         cy={cy}
         r={active ? 6 : 4}
         fill={CB_PALETTE[0]}
-        stroke={active ? '#141417' : undefined}
+        stroke={active ? '#0C0A09' : undefined}
         strokeWidth={active ? 2 : undefined}
         cursor="pointer"
         onClick={(e) => {
@@ -106,17 +106,18 @@ export function DetectionsOverTimeChart({ data, range, onRangeChange, onFilter }
       <ResponsiveContainer width="100%" height={300}>
         {chartType === 'bar' ? (
           <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-            <XAxis dataKey="label" stroke="#a1a1aa" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
-            <YAxis stroke="#a1a1aa" allowDecimals={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke="#2A2320" vertical={false} />
+            <XAxis dataKey="label" stroke="#8A8175" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+            <YAxis stroke="#8A8175" allowDecimals={false} />
             <Tooltip
               {...CHART_TOOLTIP_PROPS}
-              cursor={{ fill: 'rgba(59, 130, 246, 0.1)' }}
+              cursor={{ fill: 'rgba(225, 89, 60, 0.10)' }}
               formatter={(value) => formatCountTooltip(value)}
             />
             <Bar
+              isAnimationActive={false}
               dataKey="count"
-              fill={CB_PALETTE[4]}
+              fill={CB_PALETTE[0]}
               radius={[4, 4, 0, 0]}
               cursor="pointer"
               onClick={(_e, index) => {
@@ -127,14 +128,15 @@ export function DetectionsOverTimeChart({ data, range, onRangeChange, onFilter }
           </BarChart>
         ) : (
           <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-            <XAxis dataKey="label" stroke="#a1a1aa" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
-            <YAxis stroke="#a1a1aa" allowDecimals={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke="#2A2320" vertical={false} />
+            <XAxis dataKey="label" stroke="#8A8175" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+            <YAxis stroke="#8A8175" allowDecimals={false} />
             <Tooltip
               {...CHART_TOOLTIP_PROPS}
               formatter={(value) => formatCountTooltip(value)}
             />
             <Line
+              isAnimationActive={false}
               type="monotone"
               dataKey="count"
               stroke={CB_PALETTE[0]}

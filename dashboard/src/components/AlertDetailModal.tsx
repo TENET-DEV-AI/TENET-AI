@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { X, ShieldAlert, CheckCircle2, AlertTriangle, Copy, Check, Terminal, Clock, Tag } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import type { SecurityEvent } from '../types/security';
 import { threatTypeLabel } from '../constants/charts';
+import { dateTimeLabel, severityOf, slaRemainingLabel, workflowStatus } from '../utils/alerts';
 
 interface AlertDetailModalProps {
   event: SecurityEvent;
@@ -13,66 +13,32 @@ interface AlertDetailModalProps {
 const getOwaspMapping = (threatType?: string): string[] => {
   switch (threatType) {
     case 'prompt_injection':
-      return [
-        'LLM01: Prompt Injection',
-        'LLM06: Excessive Agency',
-        'Rule: TENET-ADV-092-INJECT',
-      ];
+      return ['LLM01: Prompt Injection', 'LLM06: Excessive Agency', 'Rule: TENET-ADV-092-INJECT'];
     case 'jailbreak':
-      return [
-        'LLM01: Prompt Injection / Jailbreak',
-        'LLM02: Sensitive Information Disclosure',
-        'Rule: TENET-ADV-104-JAILBREAK',
-      ];
+      return ['LLM01: Prompt Injection / Jailbreak', 'LLM02: Sensitive Information Disclosure', 'Rule: TENET-ADV-104-JAILBREAK'];
     case 'data_extraction':
-      return [
-        'LLM02: Sensitive Information Disclosure',
-        'LLM06: Excessive Agency',
-        'Rule: TENET-ADV-045-DATA-EXFIL',
-      ];
+      return ['LLM02: Sensitive Information Disclosure', 'LLM06: Excessive Agency', 'Rule: TENET-ADV-045-DATA-EXFIL'];
     case 'phishing':
-      return [
-        'LLM01: Prompt Injection',
-        'LLM05: Supply Chain Vulnerabilities',
-        'Rule: TENET-ADV-088-PHISH',
-      ];
+      return ['LLM01: Prompt Injection', 'LLM05: Supply Chain Vulnerabilities', 'Rule: TENET-ADV-088-PHISH'];
     case 'role_manipulation':
-      return [
-        'LLM01: Prompt Injection',
-        'LLM06: Excessive Agency',
-        'Rule: TENET-ADV-073-ROLE-SPOOF',
-      ];
+      return ['LLM01: Prompt Injection', 'LLM07: Insecure Plugin Design', 'Rule: TENET-ADV-061-ROLE'];
     default:
-      return [
-        'LLM General Reference',
-        'Rule: TENET-ADV-GENERIC',
-      ];
+      return ['LLM01: Prompt Injection', 'Rule: TENET-ADV-000-BASELINE'];
   }
 };
 
-export const AlertDetailModal: React.FC<AlertDetailModalProps> = ({
-  event,
-  onClose,
-  onAcknowledge,
-  onResolve,
-}) => {
+export function AlertDetailModal({ event, onClose, onAcknowledge, onResolve }: AlertDetailModalProps) {
   const [copied, setCopied] = useState(false);
-  const [resolutionNote, setResolutionNote] = useState('');
   const [showNoteInput, setShowNoteInput] = useState(false);
+  const [resolutionNote, setResolutionNote] = useState('');
   const modalRef = useRef<HTMLDivElement>(null);
 
-  const status = event.alert_status || 'new';
+  const status = workflowStatus(event);
+  const severity = severityOf(event);
 
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
-
-    // Focus the first focusable element inside the modal
-    const focusable = modalRef.current?.querySelectorAll<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-    );
-    if (focusable && focusable.length > 0) {
-      focusable[0].focus();
-    }
+    modalRef.current?.focus();
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -80,29 +46,19 @@ export const AlertDetailModal: React.FC<AlertDetailModalProps> = ({
         onClose();
         return;
       }
-      if (e.key === 'Tab' && modalRef.current) {
-        const focusableElements = Array.from(
-          modalRef.current.querySelectorAll<HTMLElement>(
-            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-          )
-        ).filter(el => !el.hasAttribute('disabled'));
-
-        if (focusableElements.length === 0) return;
-
-        const firstElement = focusableElements[0];
-        const lastElement = focusableElements[focusableElements.length - 1];
-
-        if (e.shiftKey) {
-          if (document.activeElement === firstElement) {
-            e.preventDefault();
-            lastElement.focus();
-          }
-        } else {
-          if (document.activeElement === lastElement) {
-            e.preventDefault();
-            firstElement.focus();
-          }
-        }
+      if (e.key !== 'Tab' || !modalRef.current) return;
+      const focusable = modalRef.current.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
       }
     };
 
@@ -119,233 +75,157 @@ export const AlertDetailModal: React.FC<AlertDetailModalProps> = ({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Rejection handled without falsely indicating Copied
+      /* clipboard blocked — leave the label unchanged rather than claim success */
     }
   };
 
   const handleResolve = () => {
     const trimmed = resolutionNote.trim();
-    onResolve(event.event_id, trimmed || 'Resolved by SOC Analyst');
+    onResolve(event.event_id, trimmed || 'Resolved by SOC analyst');
     setShowNoteInput(false);
   };
 
   return (
     <div
-      className="modal-overlay"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) {
-          onClose();
-        }
+      className="amodal"
+      onMouseDown={e => {
+        if (e.target === e.currentTarget) onClose();
       }}
       data-testid="alert-modal-backdrop"
     >
       <div
         ref={modalRef}
-        className="modal-card"
-        onClick={(e) => e.stopPropagation()}
+        className="amodal-card"
+        onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="alert-modal-title"
+        tabIndex={-1}
         data-testid="alert-detail-modal"
       >
-        <div className="modal-header">
-          <div className="modal-title-wrap">
-            <ShieldAlert className="modal-icon" size={24} />
-            <div>
-              <h2 id="alert-modal-title" data-testid="modal-alert-id">
-                Alert: {event.event_id.substring(0, 18)}...
-              </h2>
-              <span className="modal-timestamp">
-                <Clock size={12} /> {new Date(event.timestamp).toLocaleString()}
-              </span>
+        <div className="amodal-hd">
+          <div className="t">
+            <h2 id="alert-modal-title" data-testid="modal-alert-id">
+              {threatTypeLabel(event.threat_type ?? event.verdict)} · {event.source_type}
+            </h2>
+            <div className="sub">
+              {event.event_id} · {dateTimeLabel(event.timestamp)} · {slaRemainingLabel(event)}
             </div>
           </div>
-          <button
-            className="modal-close-btn"
-            onClick={onClose}
-            aria-label="Close alert modal"
-            data-testid="modal-close-button"
-          >
-            <X size={20} />
+          <button className="iconbtn" onClick={onClose} aria-label="Close alert" data-testid="modal-close-button" style={{ marginLeft: 'auto' }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
           </button>
         </div>
 
-        <div className="modal-body">
-          {/* Status and Triage Bar */}
-          <div className="triage-status-banner">
-            <div className="triage-status-pill">
-              <span className="triage-label">Workflow Status:</span>
-              <span className={`status-badge status-${status}`} data-testid="modal-workflow-status">
-                {status === 'new' && '● New Alert'}
-                {status === 'acknowledged' && '◐ Acknowledged'}
-                {status === 'resolved' && '✔ Resolved'}
-              </span>
-            </div>
-            <div className="triage-verdict-pill">
-              <span className="triage-label">Verdict:</span>
-              <span className={`verdict-badge ${event.verdict}`} data-testid="modal-verdict">
-                {event.verdict}
-              </span>
-            </div>
-            <div className="triage-score-pill">
-              <span className="triage-label">Risk Score:</span>
-              <span className="risk-score-value" data-testid="modal-risk-score">
-                {(event.risk_score * 100).toFixed(0)}%
-              </span>
-            </div>
+        <div className="amodal-bd">
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <span className={`badge status-${status}`} data-testid="modal-workflow-status">
+              {status}
+            </span>
+            <span className={`badge sev-${severity}`}>{severity}</span>
+            <span className={`badge t-${event.blocked ? 'blocked' : 'flagged'}`} data-testid="modal-verdict">
+              {event.verdict}
+            </span>
+            <span className="badge" data-testid="modal-risk-score">
+              risk {event.risk_score.toFixed(2)}
+            </span>
             {status === 'resolved' && event.resolved_at && (
-              <div className="triage-status-pill">
-                <span className="triage-label">Resolved:</span>
-                <span className="resolved-note-value" style={{ fontSize: '11px', color: '#22c55e' }}>
-                  {new Date(event.resolved_at).toLocaleTimeString()}{event.resolution_note ? ` (${event.resolution_note})` : ''}
-                </span>
-              </div>
+              <span className="badge status-resolved" data-testid="modal-resolved-time">
+                resolved {dateTimeLabel(event.resolved_at)}
+              </span>
             )}
           </div>
 
-          {/* Forensic Metadata Grid */}
-          <div className="forensic-grid">
-            <div className="forensic-item">
-              <span className="forensic-key">Threat Vector</span>
-              <span className="forensic-val" data-testid="modal-threat-type">
-                {threatTypeLabel(event.threat_type || 'unknown')}
-              </span>
-            </div>
-            <div className="forensic-item">
-              <span className="forensic-key">Target Model</span>
-              <span className="forensic-val">{event.model || 'gpt-4o'}</span>
-            </div>
-            <div className="forensic-item">
-              <span className="forensic-key">Source Identifier</span>
-              <span className="forensic-val">{event.source_id}</span>
-            </div>
-            <div className="forensic-item">
-              <span className="forensic-key">Policy Enforcement</span>
-              <span className="forensic-val">
-                {event.blocked ? '🛡️ Dropped / Blocked' : '⚠️ Monitored / Flagged'}
-              </span>
-            </div>
-          </div>
+          <dl className="kv">
+            <dt>Threat vector</dt>
+            <dd data-testid="modal-threat-type">{threatTypeLabel(event.threat_type || 'unknown')}</dd>
+            <dt>Target model</dt>
+            <dd>{event.model || 'unknown'}</dd>
+            <dt>Source</dt>
+            <dd>
+              {event.source_type} · {event.source_id}
+            </dd>
+            <dt>Enforcement</dt>
+            <dd>{event.blocked ? 'Dropped before the model' : 'Monitored, forwarded to the model'}</dd>
+            <dt>Event id</dt>
+            <dd data-testid="modal-full-event-id" style={{ fontFamily: 'var(--f-mono)', fontSize: 11 }}>
+              {event.event_id}
+            </dd>
+          </dl>
 
-          {/* Intercepted Prompt Section */}
-          <div className="prompt-section">
-            <div className="prompt-header">
-              <span className="section-subtitle">
-                <Terminal size={14} /> Intercepted User Payload
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 7 }}>
+              <span className="lbl" style={{ marginRight: 'auto' }}>
+                Intercepted payload
               </span>
-              <button
-                className="copy-prompt-btn"
-                onClick={handleCopyPrompt}
-                aria-label="Copy prompt text"
-                data-testid="copy-prompt-btn"
-              >
-                {copied ? <Check size={14} /> : <Copy size={14} />}
-                <span>{copied ? 'Copied' : 'Copy Payload'}</span>
+              <button className="abtn" onClick={handleCopyPrompt} aria-label="Copy prompt text" data-testid="copy-prompt-btn">
+                {copied ? 'Copied' : 'Copy payload'}
               </button>
             </div>
-            <pre className="prompt-code-block" data-testid="modal-prompt-content">
+            <div className="promptbox" data-testid="modal-prompt-content">
               {event.prompt || '[No prompt content logged]'}
-            </pre>
+            </div>
           </div>
 
-          {/* Detection Heuristics */}
-          <div className="mitre-section">
-            <span className="section-subtitle">
-              <Tag size={14} /> OWASP Top 10 for LLM Reference
+          <div>
+            <span className="lbl" style={{ display: 'block', marginBottom: 7 }}>
+              OWASP Top 10 for LLM reference
             </span>
-            <div className="mitre-tags">
-              {getOwaspMapping(event.threat_type).map((item) => (
-                <span key={item} className="mitre-pill">{item}</span>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {getOwaspMapping(event.threat_type).map(item => (
+                <span className="badge" key={item}>
+                  {item}
+                </span>
               ))}
             </div>
           </div>
 
           {showNoteInput && (
-            <div className="resolution-input-wrap">
-              <label htmlFor="resolution-note">Analyst Resolution Note</label>
+            <div className="resolvebox">
+              <label className="lbl" htmlFor="resolution-note">
+                Analyst resolution note
+              </label>
               <textarea
                 id="resolution-note"
                 data-testid="resolution-note-input"
                 value={resolutionNote}
-                onChange={(e) => setResolutionNote(e.target.value)}
-                placeholder="Document containment action or forensic findings..."
+                onChange={e => setResolutionNote(e.target.value)}
+                placeholder="Document the containment action or forensic findings…"
                 rows={2}
               />
             </div>
           )}
+
+          {event.acknowledged_at && (
+            <p className="hint">Acknowledged {dateTimeLabel(event.acknowledged_at)}</p>
+          )}
+          {event.resolution_note && <p className="hint">Note: {event.resolution_note}</p>}
         </div>
 
-        {/* Modal Actions */}
-        <div className="modal-footer">
-          <div className="modal-footer-left">
-            <span
-              className="modal-full-id"
-              data-testid="modal-full-event-id"
-              style={{ fontSize: '11px', color: '#71717a', fontFamily: 'monospace' }}
-            >
-              Full ID: {event.event_id}
-            </span>
-            {event.acknowledged_at && (
-              <span className="ack-time-label">
-                Acknowledged at {new Date(event.acknowledged_at).toLocaleTimeString()}
-              </span>
-            )}
-            {event.resolved_at && (
-              <span className="resolve-time-label" data-testid="modal-resolved-time" style={{ color: '#22c55e', fontSize: '11px' }}>
-                Resolved at {new Date(event.resolved_at).toLocaleTimeString()}{event.resolution_note ? ` · ${event.resolution_note}` : ''}
-              </span>
-            )}
-          </div>
-          <div className="modal-footer-right">
-            {status === 'new' && (
-              <button
-                type="button"
-                className="btn-modal-ack"
-                onClick={() => onAcknowledge(event.event_id)}
-                data-testid="modal-acknowledge-btn"
-              >
-                <AlertTriangle size={15} />
-                <span>Acknowledge Alert</span>
-              </button>
-            )}
-
-            {status !== 'resolved' && (
-              <>
-                {!showNoteInput ? (
-                  <button
-                    type="button"
-                    className="btn-modal-resolve"
-                    onClick={() => setShowNoteInput(true)}
-                    data-testid="modal-resolve-btn"
-                  >
-                    <CheckCircle2 size={15} />
-                    <span>Resolve Alert</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn-modal-confirm-resolve"
-                    onClick={handleResolve}
-                    data-testid="modal-confirm-resolve-btn"
-                  >
-                    <CheckCircle2 size={15} />
-                    <span>Confirm Resolution</span>
-                  </button>
-                )}
-              </>
-            )}
-
-            <button
-              type="button"
-              className="btn-modal-dismiss"
-              onClick={onClose}
-              data-testid="modal-dismiss-btn"
-            >
-              Close
+        <div className="amodal-ft">
+          {status === 'new' && (
+            <button className="abtn primary" onClick={() => onAcknowledge(event.event_id)} data-testid="modal-acknowledge-btn">
+              Acknowledge
             </button>
-          </div>
+          )}
+          {status !== 'resolved' &&
+            (!showNoteInput ? (
+              <button className="abtn" onClick={() => setShowNoteInput(true)} data-testid="modal-resolve-btn">
+                Resolve
+              </button>
+            ) : (
+              <button className="abtn primary" onClick={handleResolve} data-testid="modal-confirm-resolve-btn">
+                Confirm resolution
+              </button>
+            ))}
+          <span className="sp" />
+          <button className="abtn" onClick={onClose} data-testid="modal-dismiss-btn">
+            Close
+          </button>
         </div>
       </div>
     </div>
   );
-};
+}
