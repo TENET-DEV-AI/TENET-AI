@@ -22,7 +22,7 @@ bandit>=1.9.4
 safety>=3.8.1  # Updated for latest vulnerability database
 
 # Development Tools
-ipython>=9.18.1
+ipython>=9.19.1
 watchdog>=6.0.0
 
 # Type Stubs
