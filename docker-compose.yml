@@ -102,6 +102,13 @@ services:
       - MODEL_PATH=/app/models/trained
       - PHISHING_THRESHOLD=0.85
       - PROMPT_INJECTION_THRESHOLD=0.75
+      # Optional Jev backend, see services/analyzer/README.md
+      - TENET_JEV_BACKEND=${TENET_JEV_BACKEND:-sklearn}
+      - TENET_JEV_URL=${TENET_JEV_URL:-}
+      - TENET_JEV_API_KEY=${TENET_JEV_API_KEY:-}
+      - TENET_JEV_MODEL=${TENET_JEV_MODEL:-}
+      - TENET_JEV_TIMEOUT=${TENET_JEV_TIMEOUT:-}
+      - TENET_JEV_CACHE_SIZE=${TENET_JEV_CACHE_SIZE:-}
     ports:
       - "8100:8100"
     depends_on:
