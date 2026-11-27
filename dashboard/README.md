@@ -22,7 +22,7 @@ Analysts sign in with Google (Identity Services). Set the OAuth *web* client id
 in `dashboard/.env.local`:
 
 ```bash
-printf 'VITE_GOOGLE_CLIENT_ID=%s\n' '<id>.apps.googleusercontent.com' > .env.local
+printf 'VITE_GOOGLE_CLIENT_ID=%s\n' '<id>.apps.googleusercontent.com' >> .env.local
 ```
 
 Authorised JavaScript origins must include `http://localhost:5174` for dev and

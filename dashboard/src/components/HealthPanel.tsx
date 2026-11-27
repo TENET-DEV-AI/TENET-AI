@@ -20,7 +20,7 @@ export function HealthPanel({ ingest, analyzer, queueDepth, eventsCount, blocked
       <div className="health">
         {services.map(service => (
           <div className="hrow" key={service.name}>
-            <span className={`dot ${service.up ? 'ok' : 'bad'}`} />
+            <span className={`dot ${service.up ? 'ok' : 'down'}`} />
             <span className="nm">{service.name}</span>
             <span className="rt">
               {service.detail} · {service.up ? 'reachable' : 'unreachable'}

@@ -16,6 +16,8 @@ function loadGis(): Promise<void> {
     const script = existing ?? document.createElement('script');
     script.addEventListener('load', () => resolve(), { once: true });
     script.addEventListener('error', () => {
+      // Drop the broken tag so a later attempt can try again cleanly.
+      script.remove();
       gisPromise = null;
       reject(new Error('Google sign-in could not be loaded.'));
     }, { once: true });
@@ -51,7 +53,11 @@ export function GoogleSignIn({ clientId, onSignedIn, onError, onUnavailable }: G
 
     loadGis()
       .then(() => {
-        if (cancelled || !holder.current || !window.google?.accounts?.id) return;
+        if (cancelled || !holder.current) return;
+        if (!window.google?.accounts?.id) {
+          setStatus('failed');
+          return;
+        }
 
         window.google.accounts.id.initialize({
           client_id: clientId,

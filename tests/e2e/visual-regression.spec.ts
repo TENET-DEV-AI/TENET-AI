@@ -51,7 +51,7 @@ test.describe('Visual Regression Testing Suite', () => {
     await page.reload();
     await page.waitForLoadState('networkidle');
 
-    const loginCard = page.locator('.login-card');
+    const loginCard = page.locator('.auth .card');
     await expect(loginCard).toBeVisible();
     await expect(loginCard).toHaveScreenshot('dashboard-login-card.png', {
       maxDiffPixelRatio: 0.05,

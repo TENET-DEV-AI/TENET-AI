@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { SecurityEvent } from '../types/security';
 import { threatTypeLabel } from '../constants/charts';
-import { agoLabel, ageMinutes, dateTimeLabel, severityOf, slaRemainingLabel, workflowStatus } from '../utils/alerts';
+import { agoLabel, ageMinutes, dateTimeLabel, severityOf, slaRemainingLabel, verdictTone, workflowStatus } from '../utils/alerts';
 
 interface DetailPaneProps {
   event: SecurityEvent | null;
@@ -11,6 +11,9 @@ interface DetailPaneProps {
   onOpenModal: (eventId: string) => void;
   onPrevious: () => void;
   onNext: () => void;
+  resolving: boolean;
+  onStartResolve: () => void;
+  onCancelResolve: () => void;
 }
 
 type Tab = 'overview' | 'evidence' | 'trace' | 'rule' | 'activity';
@@ -31,9 +34,11 @@ export function DetailPane({
   onOpenModal,
   onPrevious,
   onNext,
+  resolving,
+  onStartResolve,
+  onCancelResolve,
 }: DetailPaneProps) {
   const [tab, setTab] = useState<Tab>('overview');
-  const [resolving, setResolving] = useState(false);
   const [note, setNote] = useState('');
 
   if (!event) {
@@ -104,8 +109,8 @@ export function DetailPane({
             <div className="sect">
               <span className="lbl">Verdict</span>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-                <span className={`badge t-${event.blocked ? 'blocked' : event.verdict === 'suspicious' ? 'flagged' : 'allowed'}`}>
-                  {event.blocked ? 'Blocked' : event.verdict === 'suspicious' ? 'Flagged' : 'Allowed'}
+                <span className={`badge t-${verdictTone(event)}`}>
+                  {event.blocked ? 'Blocked' : event.verdict === 'malicious' ? 'Flagged' : event.verdict === 'suspicious' ? 'Flagged' : 'Allowed'}
                 </span>
                 <span className={`badge sev-${sev}`}>{sev}</span>
                 <span className={`badge status-${status}`} data-testid={`status-badge-${event.event_id}`}>
@@ -246,13 +251,13 @@ export function DetailPane({
                 className="abtn primary"
                 onClick={() => {
                   onResolve(event.event_id, note.trim() || 'Resolved by SOC analyst');
-                  setResolving(false);
+                  onCancelResolve();
                   setNote('');
                 }}
               >
                 Confirm resolve
               </button>
-              <button className="abtn" onClick={() => setResolving(false)}>
+              <button className="abtn" onClick={onCancelResolve}>
                 Cancel
               </button>
             </div>
@@ -269,7 +274,7 @@ export function DetailPane({
           Acknowledge
           <kbd>a</kbd>
         </button>
-        <button className="abtn" onClick={() => setResolving(true)} disabled={status === 'resolved'}>
+        <button className="abtn" onClick={onStartResolve} disabled={status === 'resolved'}>
           Resolve
           <kbd>r</kbd>
         </button>

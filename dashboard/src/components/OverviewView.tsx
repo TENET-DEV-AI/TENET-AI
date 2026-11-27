@@ -211,7 +211,7 @@ export function OverviewView({
                   <div className="row" key={item.name}>
                     <span className="nm">{threatTypeLabel(item.name)}</span>
                     <span className="bar">
-                      <span className="fill" style={{ width: `${share}%` }} />
+                      <i style={{ width: `${share}%` }} />
                     </span>
                     <span className="pc">{share}%</span>
                   </div>

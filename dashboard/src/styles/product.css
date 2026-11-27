@@ -254,3 +254,18 @@
 .signin-bars span{display:flex;align-items:flex-end;height:100%;background:var(--ink);border-radius:2px;overflow:hidden}
 .signin-bars i{display:block;width:100%;background:var(--ember);opacity:.75;border-radius:2px 2px 0 0}
 .signin-bars span:hover i{opacity:1}
+
+/* ---------- review fixes ---------- */
+/* The detail pane reuses `.nav`, which the rail styles as a column. */
+.detail .nav{display:flex;flex-direction:row;gap:6px;flex:none}
+.detail .nav .iconbtn{flex:none}
+/* Spinner belongs to the svg, not the button, so it rotates in place. */
+.iconbtn svg.spin{animation:tenetSpin 1s linear infinite}
+@keyframes tenetSpin{to{transform:rotate(360deg)}}
+/* Disabled roadmap links should not look clickable. */
+.nav a.disabled{opacity:.45;cursor:not-allowed;pointer-events:none}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
+    transition-duration:.001ms!important}
+}

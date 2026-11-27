@@ -101,10 +101,14 @@
       </div>
 
       <div class="hero-stats" data-rv>
-        <div><div class="v"><span data-count="99.1" data-dec="1">0</span>%</div><div class="l">Accuracy on the adversarial set</div></div>
-        <div><div class="v">&lt;10<span style="font-size:.6em;color:var(--faint)">ms</span></div><div class="l">Overhead per request, p99</div></div>
-        <div><div class="v"><span data-count="2.8" data-dec="1">0</span>M+</div><div class="l">Prompts inspected to date</div></div>
+        <div><div class="v"><span data-count="0.7" data-dec="1">0</span><span style="font-size:.6em;color:var(--faint)">ms</span></div><div class="l">Median detection latency</div></div>
+        <div><div class="v">&lt;10<span style="font-size:.6em;color:var(--faint)">ms</span></div><div class="l">Budget per request, p99</div></div>
+        <div><div class="v"><span data-count="9">0</span></div><div class="l">Signature families, plus the classifier</div></div>
       </div>
+
+      <p class="mono faint" data-rv style="grid-column:1/9;margin-top:18px;font-size:9px;letter-spacing:.1em">
+        LATENCY FROM THE BUNDLED BENCHMARK · reports/benchmark_latest.md — RUN IT ON YOUR OWN TRAFFIC
+      </p>
 
       <figure class="hero-fig" data-rv="wipe">
         <div class="plate"><img src="/media/plate-01.webp" alt="Aisle of server racks in a data centre, lit by machine LEDs" width="1150" height="1437"></div>
@@ -426,7 +430,7 @@
       <div class="sch-legend">
         <div class="li"><div class="n">01</div><h4>Intercept</h4><p>A single <span class="mono lc">guard.secure_call()</span> before any model client is touched.</p></div>
         <div class="li"><div class="n">02</div><h4>Decide</h4><p>Three engines, one policy. Block, sanitize or allow — and always record why.</p></div>
-        <div class="li"><div class="n">03</div><h4>Learn</h4><p>Analyst verdicts become signatures, and signatures ship to every node overnight.</p></div>
+        <div class="li"><div class="n">03</div><h4>Learn</h4><p>Every verdict is kept with the alert, so the next responder starts from evidence rather than a hunch.</p></div>
       </div>
     </div>
   </div>
@@ -602,7 +606,7 @@
         <h2>Four lines. <em>No proxy.</em></h2>
       </div>
       <div class="sec-note" data-rv>
-        <p>Python 3.12+, fully typed, one dependency. It runs inside your process, so there is no sidecar to deploy and no extra network hop to lose.</p>
+        <p>Python 3.12+, fully typed, one dependency. It runs inside your process — no sidecar to deploy, no proxy to babysit.</p>
       </div>
     </div>
 

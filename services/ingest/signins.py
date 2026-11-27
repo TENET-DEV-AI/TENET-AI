@@ -79,8 +79,13 @@ class SignInStats(BaseModel):
 
 
 class Store(Protocol):
-    async def append(self, record: Dict[str, Any]) -> bool: ...
-    async def stats(self, days: int) -> SignInStats: ...
+    """What the router needs from a backend."""
+
+    async def append(self, record: Dict[str, Any]) -> bool:
+        """Add one sign-in. Returns False when the write did not land."""
+
+    async def stats(self, days: int) -> SignInStats:
+        """Counts for the last `days` days."""
 
 
 class MemoryStore:

@@ -112,19 +112,40 @@ export function Rail({
         </a>
 
         <span className="lbl g">Tune</span>
-        <a href="#rules" className="disabled" aria-disabled="true" title="Rule editor — not in this build">
+        <a
+          href="#rules"
+          className="disabled"
+          aria-disabled="true"
+          tabIndex={-1}
+          onClick={e => e.preventDefault()}
+          title="Rule editor — not in this build"
+        >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
             <path d="M4 6h16M4 12h16M4 18h16" />
           </svg>
           Rules
         </a>
-        <a href="#policy" className="disabled" aria-disabled="true" title="Policy editor — not in this build">
+        <a
+          href="#policy"
+          className="disabled"
+          aria-disabled="true"
+          tabIndex={-1}
+          onClick={e => e.preventDefault()}
+          title="Policy editor — not in this build"
+        >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
             <path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" />
           </svg>
           Policy
         </a>
-        <a href="#audit" className="disabled" aria-disabled="true" title="Audit log — not in this build">
+        <a
+          href="#audit"
+          className="disabled"
+          aria-disabled="true"
+          tabIndex={-1}
+          onClick={e => e.preventDefault()}
+          title="Audit log — not in this build"
+        >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
             <path d="M4 4h16v16H4z" />
             <path d="M8 9h8M8 13h5" />

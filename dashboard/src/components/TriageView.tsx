@@ -1,7 +1,16 @@
 import type { RefObject } from 'react';
 import type { FilterState, SecurityEvent } from '../types/security';
 import { threatTypeLabel } from '../constants/charts';
-import { agoLabel, ageMinutes, isOpen, isOverSla, severityOf, slaRemainingLabel, workflowStatus } from '../utils/alerts';
+import {
+  agoLabel,
+  ageMinutes,
+  isOpen,
+  isOverSla,
+  severityOf,
+  slaRemainingLabel,
+  visibleQueue,
+  workflowStatus,
+} from '../utils/alerts';
 import type { ExportFormat } from '../utils/exportEvents';
 import { FilterPanel, type Preset } from './FilterPanel';
 import { DetailPane } from './DetailPane';
@@ -37,6 +46,9 @@ interface TriageViewProps {
   onOpenModal: (eventId: string) => void;
   onPrevious: () => void;
   onNext: () => void;
+  resolving: boolean;
+  onStartResolve: () => void;
+  onCancelResolve: () => void;
 }
 
 export function TriageView(props: TriageViewProps) {
@@ -69,24 +81,12 @@ export function TriageView(props: TriageViewProps) {
     onOpenModal,
     onPrevious,
     onNext,
+    resolving,
+    onStartResolve,
+    onCancelResolve,
   } = props;
 
-  const visible = events
-    .filter(event => {
-      if (queueView === 'open' && !isOpen(event)) return false;
-      if (queueView === 'sla' && !isOverSla(event)) return false;
-      if (queueView === 'critical' && severityOf(event) !== 'critical') return false;
-      if (query) {
-        const haystack = `${event.prompt} ${event.source_id} ${event.source_type} ${event.event_id}`.toLowerCase();
-        if (!haystack.includes(query.toLowerCase())) return false;
-      }
-      return true;
-    })
-    .sort((a, b) => {
-      const rank = { critical: 0, high: 1, medium: 2, low: 3 } as const;
-      const bySeverity = rank[severityOf(a)] - rank[severityOf(b)];
-      return bySeverity !== 0 ? bySeverity : ageMinutes(b) - ageMinutes(a);
-    });
+  const visible = visibleQueue(events, queueView, query);
 
   const openTotal = events.filter(isOpen).length;
   const views: { id: QueueView; label: string }[] = [
@@ -266,6 +266,9 @@ export function TriageView(props: TriageViewProps) {
           onOpenModal={onOpenModal}
           onPrevious={onPrevious}
           onNext={onNext}
+          resolving={resolving}
+          onStartResolve={onStartResolve}
+          onCancelResolve={onCancelResolve}
         />
       </div>
     </section>

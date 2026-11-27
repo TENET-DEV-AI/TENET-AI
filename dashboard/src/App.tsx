@@ -27,7 +27,7 @@ import {
 } from './utils/exportEvents';
 import type { Preset } from './components/FilterPanel';
 import { API_BASE, API_KEY } from './config';
-import { isOpen, rankForTriage } from './utils/alerts';
+import { isOpen, visibleQueue } from './utils/alerts';
 import { disableGoogleAutoSelect } from './utils/google';
 
 export type View = 'overview' | 'triage' | 'feed' | 'health';
@@ -131,6 +131,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [modalId, setModalId] = useState<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [resolving, setResolving] = useState(false);
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const [presets, setPresets] = useState<Preset[]>(() => {
     try {
@@ -145,7 +146,13 @@ export default function App() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const config = { headers: { 'X-API-Key': API_KEY } };
+      const headers: Record<string, string> = { 'X-API-Key': API_KEY };
+      // A Google ID token is a JWT; hand it to the API so it can verify the analyst
+      // server-side. The API key alone says nothing about who is asking.
+      if (user?.token && user.token.split('.').length === 3) {
+        headers.Authorization = `Bearer ${user.token}`;
+      }
+      const config = { headers };
       const [eventsRes, statsRes, ingestHealth, analyzerHealth] = await Promise.allSettled([
         axios.get(`${API_BASE}/v1/events`, config),
         axios.get(`${API_BASE}/v1/stats`, config),
@@ -173,15 +180,20 @@ export default function App() {
         });
       }
       if (statsRes.status === 'fulfilled') setStats(prev => statsRes.value.data || prev);
+      const reachable =
+        eventsRes.status === 'fulfilled' ||
+        statsRes.status === 'fulfilled' ||
+        ingestHealth.status === 'fulfilled' ||
+        analyzerHealth.status === 'fulfilled';
       setHealth({
         ingest: ingestHealth.status === 'fulfilled' && ingestHealth.value.status === 200,
         analyzer: analyzerHealth.status === 'fulfilled' && analyzerHealth.value.status === 200,
       });
-      setLastSync(new Date());
+      if (reachable) setLastSync(new Date());
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user?.token]);
 
   useEffect(() => {
     void fetchData();
@@ -220,6 +232,15 @@ export default function App() {
 
   const handleFeedback = useCallback((eventId: string, type: 'false_positive' | 'false_negative') => {
     setFeedback(prev => ({ ...prev, [eventId]: type }));
+  }, []);
+
+  const handleLoginSuccess = useCallback((loggedUser: ConsoleUser) => {
+    try {
+      localStorage.setItem('tenet_soc_user', JSON.stringify(loggedUser));
+    } catch {
+      /* storage unavailable */
+    }
+    setUser(loggedUser);
   }, []);
 
   const handleLogout = useCallback(() => {
@@ -320,21 +341,27 @@ export default function App() {
       if (filters.dateFrom && timestamp.getTime() < parseLocalDayStart(filters.dateFrom)) return false;
       if (filters.dateTo && timestamp.getTime() > parseLocalDayEnd(filters.dateTo)) return false;
       if (filters.dayOfWeek !== '' && timestamp.getDay() !== Number(filters.dayOfWeek)) return false;
-      if (filters.hourFrom !== '') {
+      if (filters.hourFrom !== '' || filters.hourTo !== '') {
         const hour = timestamp.getHours();
-        const from = Number(filters.hourFrom);
-        const to = filters.hourTo !== '' ? Number(filters.hourTo) : from;
+        const from = filters.hourFrom !== '' ? Number(filters.hourFrom) : 0;
+        const to = filters.hourTo !== '' ? Number(filters.hourTo) : 23;
         if (hour < from || hour > to) return false;
       }
       return true;
     });
   }, [events, filters]);
 
-  const ranked = useMemo(() => rankForTriage(filteredEvents), [filteredEvents]);
+  const ranked = useMemo(
+    () => visibleQueue(filteredEvents, queueView, query),
+    [filteredEvents, queueView, query],
+  );
   const openCount = useMemo(() => events.filter(isOpen).length, [events]);
   const selected = useMemo(
-    () => filteredEvents.find(event => event.event_id === selectedId) ?? null,
-    [filteredEvents, selectedId],
+    () =>
+      filteredEvents.find(event => event.event_id === selectedId) ??
+      events.find(event => event.event_id === selectedId) ??
+      null,
+    [filteredEvents, events, selectedId],
   );
   const modalEvent = useMemo(
     () => events.find(event => event.event_id === modalId) ?? null,
@@ -390,6 +417,10 @@ export default function App() {
     [filteredEvents, filters, activeChips],
   );
 
+  const openResolve = useCallback(() => {
+    if (selected) setResolving(true);
+  }, [selected]);
+
   const selectRelative = useCallback(
     (delta: number) => {
       if (ranked.length === 0) return;
@@ -438,6 +469,7 @@ export default function App() {
       if (event.key === 'j') selectRelative(1);
       if (event.key === 'k') selectRelative(-1);
       if (selected && event.key === 'a') handleAcknowledge(selected.event_id);
+      if (selected && event.key === 'r') setResolving(true);
       if (selected && event.key === 'f') handleFeedback(selected.event_id, 'false_positive');
     };
     window.addEventListener('keydown', handler);
@@ -446,16 +478,7 @@ export default function App() {
 
   if (!user) {
     return (
-      <LoginView
-        onLoginSuccess={loggedUser => {
-          try {
-            localStorage.setItem('tenet_soc_user', JSON.stringify(loggedUser));
-          } catch {
-            /* storage unavailable */
-          }
-          setUser(loggedUser);
-        }}
-      />
+      <LoginView onLoginSuccess={handleLoginSuccess} />
     );
   }
 
@@ -525,14 +548,26 @@ export default function App() {
               onQuery={setQuery}
               searchRef={searchRef}
               selected={selected}
-              onSelect={setSelectedId}
+              onSelect={eventId => {
+                setSelectedId(eventId);
+                setResolving(false);
+              }}
               feedback={feedback}
               onAcknowledge={handleAcknowledge}
               onResolve={handleResolve}
               onFeedback={handleFeedback}
               onOpenModal={setModalId}
-              onPrevious={() => selectRelative(-1)}
-              onNext={() => selectRelative(1)}
+              onPrevious={() => {
+                setResolving(false);
+                selectRelative(-1);
+              }}
+              onNext={() => {
+                setResolving(false);
+                selectRelative(1);
+              }}
+              resolving={resolving}
+              onStartResolve={openResolve}
+              onCancelResolve={() => setResolving(false)}
             />
           )}
 

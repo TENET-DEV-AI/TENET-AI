@@ -25,22 +25,39 @@ export function severityOf(event: SecurityEvent): Severity {
   return 'low';
 }
 
+/** Badge tone for a verdict. Unblocked malicious traffic is still a threat. */
+export function verdictTone(event: SecurityEvent): 'blocked' | 'flagged' | 'allowed' {
+  if (event.blocked) return 'blocked';
+  if (event.verdict === 'malicious' || event.verdict === 'suspicious') return 'flagged';
+  return 'allowed';
+}
+
 export function workflowStatus(event: SecurityEvent): AlertWorkflowStatus {
   return event.alert_status ?? 'new';
 }
 
+/**
+ * An open *alert*. Benign traffic is not an alert — it belongs in the feed, not
+ * in the triage queue.
+ */
 export function isOpen(event: SecurityEvent): boolean {
-  return workflowStatus(event) !== 'resolved';
+  if (workflowStatus(event) === 'resolved') return false;
+  return event.blocked || event.verdict !== 'benign';
 }
 
 export function ageMinutes(event: SecurityEvent): number {
   const ts = new Date(event.timestamp).getTime();
   if (Number.isNaN(ts)) return 0;
-  return Math.max(0, Math.round((Date.now() - ts) / 60000));
+  // A resolved alert stops ageing: the clock should not keep running on it.
+  const closed = event.resolved_at ? new Date(event.resolved_at).getTime() : null;
+  const end = closed && !Number.isNaN(closed) ? closed : Date.now();
+  return Math.max(0, Math.round((end - ts) / 60000));
 }
 
 export function isOverSla(event: SecurityEvent): boolean {
-  return isOpen(event) && ageMinutes(event) > SLA_MINUTES[severityOf(event)];
+  if (!isOpen(event)) return false;
+  const age = ageMinutes(event);
+  return age > SLA_MINUTES[severityOf(event)];
 }
 
 export function slaRemainingLabel(event: SecurityEvent): string {
@@ -85,5 +102,28 @@ export function rankForTriage(events: SecurityEvent[]): SecurityEvent[] {
       const bySeverity = SEVERITY_RANK[severityOf(a)] - SEVERITY_RANK[severityOf(b)];
       if (bySeverity !== 0) return bySeverity;
       return ageMinutes(b) - ageMinutes(a);
+    });
+}
+
+/** The rows an analyst can actually see: queue view + free-text filter, worst first. */
+export function visibleQueue(
+  events: SecurityEvent[],
+  view: 'open' | 'sla' | 'critical' | 'all',
+  query: string,
+): SecurityEvent[] {
+  const needle = query.trim().toLowerCase();
+  return [...events]
+    .filter(event => {
+      if (view === 'open' && !isOpen(event)) return false;
+      if (view === 'sla' && !isOverSla(event)) return false;
+      if (view === 'critical' && severityOf(event) !== 'critical') return false;
+      if (!needle) return true;
+      return `${event.prompt} ${event.source_id} ${event.source_type} ${event.event_id}`
+        .toLowerCase()
+        .includes(needle);
+    })
+    .sort((a, b) => {
+      const bySeverity = SEVERITY_RANK[severityOf(a)] - SEVERITY_RANK[severityOf(b)];
+      return bySeverity !== 0 ? bySeverity : ageMinutes(b) - ageMinutes(a);
     });
 }

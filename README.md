@@ -61,8 +61,9 @@ if result["status"] == "blocked":
     return "Blocked"
 ```
 
-The distribution ships the client only. Publishing is tag-driven
-(`.github/workflows/publish.yml`), so a release lands on PyPI when you push `v*`.
+The distribution ships the client only. Publishing is tag-driven: pushing a
+`v*.*.*` tag runs `.github/workflows/release.yml`, which builds the changelog,
+the wheel and the image.
 
 **Full stack** — services, console and detector:
 
@@ -91,7 +92,7 @@ npm run dev                    # http://localhost:5174
 Analysts sign in with Google. Add the OAuth web client id to `dashboard/.env.local`:
 
 ```bash
-printf 'VITE_GOOGLE_CLIENT_ID=%s\n' '<id>.apps.googleusercontent.com' > dashboard/.env.local
+printf 'VITE_GOOGLE_CLIENT_ID=%s\n' '<id>.apps.googleusercontent.com' >> dashboard/.env.local
 ```
 
 Authorised JavaScript origins: `http://localhost:5174` for dev, your console
@@ -128,16 +129,17 @@ cd landing && npm install && npm run dev   # http://localhost:5173
 ## Architecture
 
 ```
-application ──▶ ingest :8000 ──▶ redis queue ──▶ analyzer :8100 ──▶ postgres
+application ──▶ ingest :8000 ──▶ redis queue ──▶ analyzer :8100 ──▶ verdict
                       │                              │
                       └──────────────┬───────────────┘
                                      ▼
                             SOC console (dashboard/)
 ```
 
-- **Ingest** — accepts events, enforces the API key, writes the queue.
+- **Ingest** — accepts events, enforces the API key, writes the queue and the event record.
 - **Analyzer** — runs signatures and the classifier, writes the verdict.
-- **Postgres** — events, verdicts, analyst workflow state.
+- **Redis** — queue, event records (24 h TTL) and the sign-in log.
+- **Postgres and MinIO** — provisioned in `docker-compose.yml` for the roadmap; the current services do not read or write them yet.
 - **Console** — the analyst surface: overview, triage queue, alert feed, health.
 
 Deeper detail: [`ARCHITECTURE_DEEP_DIVE.md`](ARCHITECTURE_DEEP_DIVE.md).

@@ -15,10 +15,17 @@ interface LoginViewProps {
   onLoginSuccess: (user: ConsoleUser) => void;
 }
 
-const VALID_ACCOUNTS: Record<string, string> = {
-  'analyst@tenet.ai': 'password123',
-  'admin@tenet.ai': 'admin123',
-};
+/**
+ * Demo accounts exist for local development and the e2e suite. A production
+ * build has no local accounts at all — Google, and whatever the API allows, is
+ * the only way in.
+ */
+const VALID_ACCOUNTS: Record<string, string> = import.meta.env.DEV
+  ? {
+      'analyst@tenet.ai': 'password123',
+      'admin@tenet.ai': 'admin123',
+    }
+  : {};
 
 /**
  * `VITE_GOOGLE_CLIENT_ID` switches the console to Google sign-in. Without it the
@@ -36,7 +43,6 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
   const [role, setRole] = useState('Senior SOC Responder');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [showCredentials, setShowCredentials] = useState(!googleEnabled);
 
   const handleGoogle = useCallback(
     (claims: GoogleClaims, idToken: string) => {
@@ -56,8 +62,6 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
 
   const handleGoogleError = useCallback((message: string) => setError(message), []);
 
-  // If Google cannot load at all, do not leave the analyst on a dead screen.
-  const handleGoogleUnavailable = useCallback(() => setShowCredentials(true), []);
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -72,7 +76,11 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
       return;
     }
     if (VALID_ACCOUNTS[username.trim()] !== password) {
-      setError('Invalid credentials. Use analyst@tenet.ai / password123 or fill the demo credentials.');
+      setError(
+        googleEnabled
+          ? 'Local credentials are not enabled in this build. Sign in with Google.'
+          : 'Invalid credentials. Use analyst@tenet.ai / password123 or fill the demo credentials.',
+      );
       return;
     }
 
@@ -132,7 +140,7 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
             <h1>TENET AI Console</h1>
             <p className="hint" style={{ marginTop: 8, lineHeight: 1.65 }}>
               {googleEnabled
-                ? 'Sign in with the Google account your organisation issued you.'
+                ? 'Sign in with the Google account your organisation issued you, or use analyst credentials.'
                 : 'Authenticate with your analyst credentials to inspect intercepted LLM events.'}
             </p>
           </div>
@@ -148,15 +156,78 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
           )}
 
           {googleEnabled && (
-            <GoogleSignIn
-              clientId={GOOGLE_CLIENT_ID}
-              onSignedIn={handleGoogle}
-              onError={handleGoogleError}
-              onUnavailable={handleGoogleUnavailable}
-            />
+            <>
+              <GoogleSignIn
+                clientId={GOOGLE_CLIENT_ID}
+                onSignedIn={handleGoogle}
+                onError={handleGoogleError}
+              />
+              <div className="auth-divider" role="presentation">
+                <span>or sign in with credentials</span>
+              </div>
+            </>
           )}
 
-          {/* The notice sits outside the Google block: password sign-ins are logged too. */}
+          <form onSubmit={handleSubmit} data-testid="login-form">
+            <div className="field">
+              <label htmlFor="login-username">Analyst email / ID</label>
+              <input
+                id="login-username"
+                data-testid="login-username-input"
+                type="text"
+                value={username}
+                onChange={event => setUsername(event.target.value)}
+                placeholder="analyst@tenet.ai"
+                autoComplete="username"
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="login-password">Password</label>
+              <input
+                id="login-password"
+                data-testid="login-password-input"
+                type="password"
+                value={password}
+                onChange={event => setPassword(event.target.value)}
+                placeholder="••••••••••••"
+                autoComplete="current-password"
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="login-role">Operational role</label>
+              <select
+                id="login-role"
+                data-testid="login-role-select"
+                value={role}
+                onChange={event => setRole(event.target.value)}
+              >
+                <option value="Tier-1 Analyst">Tier-1 SOC Analyst</option>
+                <option value="Senior SOC Responder">Senior SOC Responder</option>
+                <option value="Lead SecOps Admin">Lead SecOps Admin</option>
+              </select>
+            </div>
+
+            <button className="btn" type="submit" data-testid="login-submit-button" disabled={isLoading}>
+              {isLoading ? 'Verifying…' : 'Enter console'}
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                <path d="M2 8h11M9 4l4 4-4 4" />
+              </svg>
+            </button>
+
+            {import.meta.env.DEV && (
+              <button
+                className="btn ghost"
+                type="button"
+                data-testid="login-demo-credentials-btn"
+                onClick={fillDemo}
+              >
+                Fill demo credentials
+              </button>
+            )}
+          </form>
+
           <p className="help">
             Signing in records your email and the time, for access auditing. Trouble signing in? Ask
             your SOC lead to add your account, or{' '}
@@ -165,82 +236,6 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
             </a>
             .
           </p>
-
-          {googleEnabled && (
-            <>
-              <div className="auth-divider" role="presentation">
-                <span>or</span>
-              </div>
-
-              {!showCredentials && (
-                <button className="disclosure" type="button" onClick={() => setShowCredentials(true)}>
-                  Use analyst credentials
-                </button>
-              )}
-            </>
-          )}
-
-          {showCredentials && (
-            <form onSubmit={handleSubmit} data-testid="login-form">
-              <div className="field">
-                <label htmlFor="login-username">Analyst email / ID</label>
-                <input
-                  id="login-username"
-                  data-testid="login-username-input"
-                  type="text"
-                  value={username}
-                  onChange={event => setUsername(event.target.value)}
-                  placeholder="analyst@tenet.ai"
-                  autoComplete="username"
-                />
-              </div>
-
-              <div className="field">
-                <label htmlFor="login-password">Password</label>
-                <input
-                  id="login-password"
-                  data-testid="login-password-input"
-                  type="password"
-                  value={password}
-                  onChange={event => setPassword(event.target.value)}
-                  placeholder="••••••••••••"
-                  autoComplete="current-password"
-                />
-              </div>
-
-              <div className="field">
-                <label htmlFor="login-role">Operational role</label>
-                <select
-                  id="login-role"
-                  data-testid="login-role-select"
-                  value={role}
-                  onChange={event => setRole(event.target.value)}
-                >
-                  <option value="Tier-1 Analyst">Tier-1 SOC Analyst</option>
-                  <option value="Senior SOC Responder">Senior SOC Responder</option>
-                  <option value="Lead SecOps Admin">Lead SecOps Admin</option>
-                </select>
-              </div>
-
-              <button className="btn" type="submit" data-testid="login-submit-button" disabled={isLoading}>
-                {isLoading ? 'Verifying…' : 'Enter console'}
-                <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                  <path d="M2 8h11M9 4l4 4-4 4" />
-                </svg>
-              </button>
-
-              {import.meta.env.DEV && (
-                <button
-                  className="btn ghost"
-                  type="button"
-                  data-testid="login-demo-credentials-btn"
-                  onClick={fillDemo}
-                >
-                  Fill demo credentials
-                </button>
-              )}
-            </form>
-          )}
 
           <div className="foot">
             <span>console 0.2.0 · MIT</span>

@@ -55,10 +55,11 @@ export function verifyIdToken(token: string, clientId: string, now = Date.now())
   if (!claims) return { ok: false, reason: 'Google returned a token we could not read.' };
   if (!VALID_ISSUERS.includes(claims.iss)) return { ok: false, reason: 'Token was not issued by Google.' };
   if (claims.aud !== clientId) return { ok: false, reason: 'Token was issued for a different client.' };
-  if (typeof claims.exp === 'number' && claims.exp * 1000 <= now) {
+  if (typeof claims.exp !== 'number' || claims.exp * 1000 <= now) {
     return { ok: false, reason: 'That sign-in has expired. Try again.' };
   }
-  if (claims.email_verified === false || claims.email_verified === 'false') {
+  // Google sends a boolean; older tokens send the string "true".
+  if (claims.email_verified !== true && claims.email_verified !== 'true') {
     return { ok: false, reason: 'That Google account has no verified email address.' };
   }
   return { ok: true, claims };

@@ -74,7 +74,7 @@ services:
       - API_HOST=0.0.0.0
       - API_PORT=8000
       - API_KEY=${API_KEY:-tenet-dev-key-change-in-production}
-      - CORS_ORIGINS=http://localhost:3000,http://localhost:8080
+      - CORS_ORIGINS=http://localhost:5174,http://localhost:3000,http://localhost:8080
     ports:
       - "8000:8000"
     depends_on:
