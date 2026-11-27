@@ -148,23 +148,26 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
           )}
 
           {googleEnabled && (
+            <GoogleSignIn
+              clientId={GOOGLE_CLIENT_ID}
+              onSignedIn={handleGoogle}
+              onError={handleGoogleError}
+              onUnavailable={handleGoogleUnavailable}
+            />
+          )}
+
+          {/* The notice sits outside the Google block: password sign-ins are logged too. */}
+          <p className="help">
+            Signing in records your email and the time, for access auditing. Trouble signing in? Ask
+            your SOC lead to add your account, or{' '}
+            <a href="https://github.com/TENET-DEV-AI/TENET-AI/issues" target="_blank" rel="noreferrer">
+              report a problem
+            </a>
+            .
+          </p>
+
+          {googleEnabled && (
             <>
-              <GoogleSignIn
-                clientId={GOOGLE_CLIENT_ID}
-                onSignedIn={handleGoogle}
-                onError={handleGoogleError}
-                onUnavailable={handleGoogleUnavailable}
-              />
-
-              <p className="help">
-                Signing in records your email and the time, for access auditing. Trouble signing in?
-                Ask your SOC lead to add your account, or{' '}
-                <a href="https://github.com/TENET-DEV-AI/TENET-AI/issues" target="_blank" rel="noreferrer">
-                  report a problem
-                </a>
-                .
-              </p>
-
               <div className="auth-divider" role="presentation">
                 <span>or</span>
               </div>

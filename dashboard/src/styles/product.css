@@ -66,7 +66,7 @@
 .auth .badge{display:inline-flex;align-items:center;gap:6px;font-family:var(--f-mono);font-size:9px;
   letter-spacing:.16em;text-transform:uppercase;color:var(--amber);border:1px solid rgba(217,164,65,.35);
   background:var(--amber-soft);border-radius:999px;padding:4px 9px}
-.auth .help{margin-top:14px;font-family:var(--f-mono);font-size:9.5px;letter-spacing:.06em;color:var(--faint);line-height:1.7}
+.auth .help{margin:14px 0 16px;font-family:var(--f-mono);font-size:9.5px;letter-spacing:.06em;color:var(--faint);line-height:1.7}
 .auth .help a{color:var(--dim);border-bottom:1px solid var(--line)}
 .auth .help a:hover{color:var(--paper);border-color:var(--ember)}
 .auth .disclosure{align-self:flex-start;font-family:var(--f-mono);font-size:9.5px;letter-spacing:.12em;
