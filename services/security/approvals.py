@@ -144,10 +144,10 @@ class ApprovalQueue:
 @dataclass(frozen=True)
 class GateResult:
     decision: Decision
-    request_id: Optional[str] = None
-    action: str = ""
-    tool: str = ""
-    scope: str = ""
+    request_id: Optional[str]
+    action: str
+    tool: str
+    scope: str
 
     @property
     def runs_now(self) -> bool:

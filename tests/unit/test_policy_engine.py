@@ -153,3 +153,22 @@ def test_duplicate_yaml_keys_are_rejected(tmp_path):
         load_policy(path)
     path.write_text("rules:\n  - id: r\n    effect: block\n")
     assert load_policy(path).evaluate("x").verdict == BLOCK
+
+
+def test_yaml_merge_keys_may_be_overridden(tmp_path):
+    pytest.importorskip("yaml")
+    path = tmp_path / "p.yaml"
+    path.write_text(
+        "rules:\n"
+        "  - &base {id: a, effect: allow, action: 'pay.*'}\n"
+        "  - {<<: *base, id: b, effect: block}\n"
+    )
+    assert load_policy(path).evaluate("pay.send").verdict == "block"
+
+
+def test_unhashable_yaml_key_is_a_policy_error(tmp_path):
+    pytest.importorskip("yaml")
+    path = tmp_path / "p.yaml"
+    path.write_text("? [a, b]\n: 1\nrules: []\n")
+    with pytest.raises(PolicyError):
+        load_policy(path)

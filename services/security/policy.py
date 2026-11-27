@@ -144,13 +144,19 @@ def _strict_yaml_loader(yaml: Any) -> Any:
         pass
 
     def construct_mapping(loader: Any, node: Any, deep: bool = False) -> dict:
-        loader.flatten_mapping(node)
-        keys = [loader.construct_object(k, deep=deep) for k, _ in node.value]
+        # Only keys written in this mapping count: a "<<" merge may be overridden on purpose.
         seen = set()
-        for key in keys:
-            if key in seen:
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue
+            key = loader.construct_object(key_node, deep=True)
+            try:
+                duplicate = key in seen
+                seen.add(key)
+            except TypeError as exc:
+                raise PolicyError(f"policy keys must be plain values, got {key!r}") from exc
+            if duplicate:
                 raise PolicyError(f"duplicate key {key!r} in policy")
-            seen.add(key)
         return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
 
     StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_mapping)
