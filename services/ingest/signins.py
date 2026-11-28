@@ -24,7 +24,7 @@ import logging
 import os
 from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Deque, Dict, List, Literal, Optional, Protocol
+from typing import Any, Callable, Deque, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Query, Security
 from pydantic import BaseModel, Field
@@ -76,18 +76,6 @@ class SignInStats(BaseModel):
     by_day: List[DayCount]
     by_provider: Dict[str, int]
     last_signin: Optional[Dict[str, Any]] = None
-
-
-class Store(Protocol):
-    """What the router needs from a backend."""
-
-    async def append(self, record: Dict[str, Any]) -> bool:
-        """Add one sign-in. Returns False when the write did not land."""
-        ...
-
-    async def stats(self, days: int) -> SignInStats:
-        """Counts for the last `days` days."""
-        ...
 
 
 class MemoryStore:
@@ -200,7 +188,7 @@ def build_router(
     router = APIRouter(prefix="/v1/signins", tags=["Sign-ins"])
     memory = MemoryStore()
 
-    async def store() -> tuple[Store, str]:
+    async def store() -> tuple[RedisStore | MemoryStore, str]:
         client = redis_getter()
         if client is not None:
             return RedisStore(redis_call, redis_getter), "redis"
