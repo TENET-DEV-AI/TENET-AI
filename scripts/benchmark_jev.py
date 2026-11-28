@@ -30,7 +30,8 @@ async def compare(dataset: list, classifier: JevClassifier, threshold: float = 0
     """Score every dataset item with the local detectors, Jev and both together.
 
     All systems are measured on the prompts Jev answered, so the numbers are
-    comparable when some Jev calls fail.
+    comparable when some Jev calls fail. Latency covers every Jev call,
+    including the failed ones.
 
     Args:
         dataset: Items from ``DetectionBenchmarkRunner.load_dataset``.
@@ -51,7 +52,8 @@ async def compare(dataset: list, classifier: JevClassifier, threshold: float = 0
 
         start = time.perf_counter()
         jev = await classifier.classify(prompt)
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        # Failed calls count too, otherwise an outage only reports the fast ones.
+        latencies.append((time.perf_counter() - start) * 1000.0)
 
         if jev["status"] != "ok":
             failures[jev["reason"]] = failures.get(jev["reason"], 0) + 1
@@ -73,7 +75,6 @@ async def compare(dataset: list, classifier: JevClassifier, threshold: float = 0
             scored = {"sklearn": (ml["risk_score"], ml["verdict"]), **scored}
 
         y_true.append(1 if item["label"] == "malicious" else 0)
-        latencies.append(elapsed_ms)
         for name, output in scored.items():
             outputs.setdefault(name, []).append(output)
 
@@ -94,6 +95,7 @@ async def compare(dataset: list, classifier: JevClassifier, threshold: float = 0
         "answered_samples": len(y_true),
         "failures": failures,
         "threshold": threshold,
+        "jev_calls": len(latencies),
         "jev_avg_latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else None,
         "jev_p95_latency_ms": round(sorted(latencies)[p95_index], 2) if latencies else None,
         "systems": systems,
@@ -108,7 +110,10 @@ def to_markdown(report: dict) -> str:
         f"Jev answered {report['answered_samples']} of {report['total_samples']} prompts.  ",
         "Every row is measured on the answered prompts only.  ",
         f"Failures: {report['failures'] or 'none'}  ",
-        f"Jev latency (ms): avg {report['jev_avg_latency_ms']}, p95 {report['jev_p95_latency_ms']}",
+        (
+            f"Jev latency over all {report['jev_calls']} calls, failures included (ms): "
+            f"avg {report['jev_avg_latency_ms']}, p95 {report['jev_p95_latency_ms']}"
+        ),
     ]
     titles = {
         "risk_score": f"Flagged when risk_score >= {report['threshold']}",
