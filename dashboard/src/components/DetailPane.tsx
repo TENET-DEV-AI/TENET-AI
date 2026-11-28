@@ -1,7 +1,15 @@
 import { useState } from 'react';
 import type { SecurityEvent } from '../types/security';
 import { threatTypeLabel } from '../constants/charts';
-import { agoLabel, ageMinutes, dateTimeLabel, severityOf, slaRemainingLabel, verdictTone, workflowStatus } from '../utils/alerts';
+import {
+  agoLabel,
+  captureAgeMinutes,
+  dateTimeLabel,
+  severityOf,
+  slaRemainingLabel,
+  verdictTone,
+  workflowStatus,
+} from '../utils/alerts';
 
 interface DetailPaneProps {
   event: SecurityEvent | null;
@@ -72,7 +80,7 @@ export function DetailPane({
         <div className="t">
           <h2>{typeLabel}</h2>
           <div className="sub">
-            {event.source_type} · {event.source_id} · {event.model} · {agoLabel(ageMinutes(event))} ago
+            {event.source_type} · {event.source_id} · {event.model} · {agoLabel(captureAgeMinutes(event))} ago
           </div>
         </div>
         <div className="nav">

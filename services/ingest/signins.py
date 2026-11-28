@@ -83,9 +83,11 @@ class Store(Protocol):
 
     async def append(self, record: Dict[str, Any]) -> bool:
         """Add one sign-in. Returns False when the write did not land."""
+        ...
 
     async def stats(self, days: int) -> SignInStats:
         """Counts for the last `days` days."""
+        ...
 
 
 class MemoryStore:
@@ -129,17 +131,31 @@ class RedisStore:
         client = self._client()
         if client is None:
             return False
+
         day = record["day"]
         provider = record["provider"]
-        results = [
-            await self._call(client.lpush(LOG_KEY, json.dumps(record))),
-            await self._call(client.ltrim(LOG_KEY, 0, MAX_LOG_ENTRIES - 1)),
-            await self._call(client.sadd(ACCOUNTS_KEY, record["email"])),
-            await self._call(client.incr(DAY_KEY.format(day=day))),
-            await self._call(client.expire(DAY_KEY.format(day=day), DAY_TTL_SECONDS)),
-            await self._call(client.incr(PROVIDER_KEY.format(provider=provider))),
-        ]
-        return all(result is not None for result in results)
+        day_key = DAY_KEY.format(day=day)
+
+        # One MULTI/EXEC: either the log entry and every counter land together, or
+        # none of them do. Six separate calls left the counts and the log able to
+        # disagree.
+        async def _transaction():
+            async with client.pipeline(transaction=True) as pipe:
+                pipe.lpush(LOG_KEY, json.dumps(record))
+                pipe.ltrim(LOG_KEY, 0, MAX_LOG_ENTRIES - 1)
+                pipe.sadd(ACCOUNTS_KEY, record["email"])
+                pipe.incr(day_key)
+                pipe.expire(day_key, DAY_TTL_SECONDS)
+                pipe.incr(PROVIDER_KEY.format(provider=provider))
+                return await pipe.execute()
+
+        try:
+            result = await self._call(_transaction())
+        except Exception as exc:  # noqa: BLE001 - a failed log must not break sign-in
+            logger.warning("Sign-in log transaction failed: %s", exc)
+            return False
+
+        return result is not None
 
     async def stats(self, days: int) -> SignInStats:
         client = self._client()

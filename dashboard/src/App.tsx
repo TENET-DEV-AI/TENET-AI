@@ -27,7 +27,7 @@ import {
 } from './utils/exportEvents';
 import type { Preset } from './components/FilterPanel';
 import { API_BASE, API_KEY } from './config';
-import { isOpen, visibleQueue } from './utils/alerts';
+import { isOpen, visibleQueue, workflowStatus } from './utils/alerts';
 import { disableGoogleAutoSelect } from './utils/google';
 
 export type View = 'overview' | 'triage' | 'feed' | 'health';
@@ -142,8 +142,17 @@ export default function App() {
     }
   });
   const searchRef = useRef<HTMLInputElement>(null);
+  // Each poll owns a generation and an abort controller: a response from an
+  // older session (logout, account switch) must never land on current state.
+  const fetchGeneration = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async () => {
+    const generation = ++fetchGeneration.current;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     try {
       const headers: Record<string, string> = { 'X-API-Key': API_KEY };
@@ -154,11 +163,13 @@ export default function App() {
       }
       const config = { headers };
       const [eventsRes, statsRes, ingestHealth, analyzerHealth] = await Promise.allSettled([
-        axios.get(`${API_BASE}/v1/events`, config),
-        axios.get(`${API_BASE}/v1/stats`, config),
-        axios.get(`${API_BASE}/health`),
-        axios.get('http://localhost:8100/health'),
+        axios.get(`${API_BASE}/v1/events`, { ...config, signal: controller.signal }),
+        axios.get(`${API_BASE}/v1/stats`, { ...config, signal: controller.signal }),
+        axios.get(`${API_BASE}/health`, { signal: controller.signal }),
+        axios.get('http://localhost:8100/health', { signal: controller.signal }),
       ]);
+
+      if (generation !== fetchGeneration.current) return;
 
       if (eventsRes.status === 'fulfilled') {
         const fetched = Array.isArray(eventsRes.value.data.events) ? eventsRes.value.data.events : [];
@@ -191,14 +202,17 @@ export default function App() {
       });
       if (reachable) setLastSync(new Date());
     } finally {
-      setLoading(false);
+      if (generation === fetchGeneration.current) setLoading(false);
     }
   }, [user?.token]);
 
   useEffect(() => {
     void fetchData();
     const interval = setInterval(() => void fetchData(), 10000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      abortRef.current?.abort();
+    };
   }, [fetchData]);
 
   /* ---------------------------------------------------------------- actions */
@@ -343,8 +357,9 @@ export default function App() {
       if (filters.dayOfWeek !== '' && timestamp.getDay() !== Number(filters.dayOfWeek)) return false;
       if (filters.hourFrom !== '' || filters.hourTo !== '') {
         const hour = timestamp.getHours();
+        // One end alone means "that hour" (from) or "up to that hour" (to).
         const from = filters.hourFrom !== '' ? Number(filters.hourFrom) : 0;
-        const to = filters.hourTo !== '' ? Number(filters.hourTo) : 23;
+        const to = filters.hourTo !== '' ? Number(filters.hourTo) : filters.hourFrom !== '' ? from : 23;
         if (hour < from || hour > to) return false;
       }
       return true;
@@ -427,12 +442,14 @@ export default function App() {
       const current = ranked.findIndex(event => event.event_id === selectedId);
       const next = current === -1 ? 0 : (current + delta + ranked.length) % ranked.length;
       setSelectedId(ranked[next].event_id);
+      setResolving(false);
     },
     [ranked, selectedId],
   );
 
   const openAlert = useCallback((eventId: string) => {
     setSelectedId(eventId);
+    setResolving(false);
     setView('triage');
     setMobileNav(false);
   }, []);
@@ -468,8 +485,10 @@ export default function App() {
       if (view !== 'triage') return;
       if (event.key === 'j') selectRelative(1);
       if (event.key === 'k') selectRelative(-1);
-      if (selected && event.key === 'a') handleAcknowledge(selected.event_id);
-      if (selected && event.key === 'r') setResolving(true);
+      if (selected && event.key === 'a' && workflowStatus(selected) === 'new') {
+        handleAcknowledge(selected.event_id);
+      }
+      if (selected && event.key === 'r' && workflowStatus(selected) !== 'resolved') setResolving(true);
       if (selected && event.key === 'f') handleFeedback(selected.event_id, 'false_positive');
     };
     window.addEventListener('keydown', handler);

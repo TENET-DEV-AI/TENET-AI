@@ -1,6 +1,6 @@
 import type { SecurityEvent } from '../types/security';
 import { threatTypeLabel } from '../constants/charts';
-import { clockLabel, dateTimeLabel, workflowStatus } from '../utils/alerts';
+import { clockLabel, dateTimeLabel, verdictTone, workflowStatus } from '../utils/alerts';
 
 interface FeedViewProps {
   events: SecurityEvent[];
@@ -56,9 +56,7 @@ export function FeedView({ events, onOpenModal, onSelect }: FeedViewProps) {
                       {clockLabel(event.timestamp)}
                     </td>
                     <td>
-                      <span className={`badge t-${event.blocked ? 'blocked' : event.verdict === 'suspicious' ? 'flagged' : 'allowed'}`}>
-                        {event.blocked ? 'blocked' : event.verdict === 'suspicious' ? 'flagged' : 'allowed'}
-                      </span>
+                      <span className={`badge t-${verdictTone(event)}`}>{verdictTone(event)}</span>
                     </td>
                     <td>{threatTypeLabel(event.threat_type ?? event.verdict)}</td>
                     <td className="mono">

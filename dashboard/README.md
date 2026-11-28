@@ -12,7 +12,7 @@ anything visual.
 ```bash
 npm install
 # the console sends this key to the ingest API — use the same value as API_KEY in ../.env
-API_KEY=$(sed -n 's/^API_KEY=//p' ../.env); printf 'VITE_API_KEY=%s\n' "$API_KEY" > .env.local
+API_KEY=$(sed -n 's/^API_KEY=//p' ../.env); printf 'VITE_API_KEY=%s\n' "$API_KEY" >> .env.local
 npm run dev          # http://localhost:5174
 ```
 

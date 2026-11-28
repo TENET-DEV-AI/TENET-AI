@@ -136,7 +136,7 @@ application ──▶ ingest :8000 ──▶ redis queue ──▶ analyzer :810
                             SOC console (dashboard/)
 ```
 
-- **Ingest** — accepts events, enforces the API key, writes the queue and the event record.
+- **Ingest** — accepts events, enforces the API key, and queues the ones it lets through. A blocked prompt is answered immediately and never enters the queue or the event store.
 - **Analyzer** — runs signatures and the classifier, writes the verdict.
 - **Redis** — queue, event records (24 h TTL) and the sign-in log.
 - **Postgres and MinIO** — provisioned in `docker-compose.yml` for the roadmap; the current services do not read or write them yet.

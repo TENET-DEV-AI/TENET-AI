@@ -45,6 +45,14 @@ export function isOpen(event: SecurityEvent): boolean {
   return event.blocked || event.verdict !== 'benign';
 }
 
+/** Time since capture, live — what an analyst means by "how old is this". */
+export function captureAgeMinutes(event: SecurityEvent): number {
+  const ts = new Date(event.timestamp).getTime();
+  if (Number.isNaN(ts)) return 0;
+  return Math.max(0, Math.round((Date.now() - ts) / 60000));
+}
+
+/** Age that stops at resolution — the SLA clock, not the wall clock. */
 export function ageMinutes(event: SecurityEvent): number {
   const ts = new Date(event.timestamp).getTime();
   if (Number.isNaN(ts)) return 0;
@@ -114,6 +122,9 @@ export function visibleQueue(
   const needle = query.trim().toLowerCase();
   return [...events]
     .filter(event => {
+      // Every view holds alerts only: benign traffic belongs to the feed.
+      const isAlert = event.blocked || event.verdict !== 'benign';
+      if (!isAlert) return false;
       if (view === 'open' && !isOpen(event)) return false;
       if (view === 'sla' && !isOverSla(event)) return false;
       if (view === 'critical' && severityOf(event) !== 'critical') return false;

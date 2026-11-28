@@ -35,8 +35,18 @@ const VALID_ACCOUNTS: Record<string, string> = import.meta.env.DEV
  */
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 
+/**
+ * Password sign-in only works where the build can actually check a password:
+ * local development, or a deployment that sets VITE_ALLOW_PASSWORD_AUTH after
+ * wiring credential auth into the API. Anywhere else the form is shown but
+ * inert, with the reason on screen — a form that silently fails is worse.
+ */
+const PASSWORD_ENABLED =
+  import.meta.env.DEV || import.meta.env.VITE_ALLOW_PASSWORD_AUTH === 'true';
+
 export function LoginView({ onLoginSuccess }: LoginViewProps) {
   const googleEnabled = Boolean(GOOGLE_CLIENT_ID);
+  const anyMethodEnabled = googleEnabled || PASSWORD_ENABLED;
 
   const [username, setUsername] = useState('analyst@tenet.ai');
   const [password, setPassword] = useState('');
@@ -145,6 +155,19 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
             </p>
           </div>
 
+          {!anyMethodEnabled && (
+            <div className="err" role="alert">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 8v5M12 16h.01" />
+              </svg>
+              <span>
+                This console has no sign-in method configured. Set
+                <code> VITE_GOOGLE_CLIENT_ID </code> in <code>dashboard/.env.local</code> and rebuild.
+              </span>
+            </div>
+          )}
+
           {error && (
             <div className="err" role="alert" data-testid="login-error-message">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -168,7 +191,12 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
             </>
           )}
 
-          <form onSubmit={handleSubmit} data-testid="login-form">
+          <form onSubmit={handleSubmit} data-testid="login-form" aria-describedby={!PASSWORD_ENABLED ? 'password-disabled' : undefined}>
+            {!PASSWORD_ENABLED && (
+              <p className="hint" id="password-disabled">
+                Analyst credentials are disabled in this build — sign in with Google above.
+              </p>
+            )}
             <div className="field">
               <label htmlFor="login-username">Analyst email / ID</label>
               <input
@@ -179,6 +207,7 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
                 onChange={event => setUsername(event.target.value)}
                 placeholder="analyst@tenet.ai"
                 autoComplete="username"
+                disabled={!PASSWORD_ENABLED}
               />
             </div>
 
@@ -192,6 +221,7 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
                 onChange={event => setPassword(event.target.value)}
                 placeholder="••••••••••••"
                 autoComplete="current-password"
+                disabled={!PASSWORD_ENABLED}
               />
             </div>
 
@@ -202,6 +232,7 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
                 data-testid="login-role-select"
                 value={role}
                 onChange={event => setRole(event.target.value)}
+                disabled={!PASSWORD_ENABLED}
               >
                 <option value="Tier-1 Analyst">Tier-1 SOC Analyst</option>
                 <option value="Senior SOC Responder">Senior SOC Responder</option>
@@ -209,7 +240,12 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
               </select>
             </div>
 
-            <button className="btn" type="submit" data-testid="login-submit-button" disabled={isLoading}>
+            <button
+              className="btn"
+              type="submit"
+              data-testid="login-submit-button"
+              disabled={isLoading || !PASSWORD_ENABLED}
+            >
               {isLoading ? 'Verifying…' : 'Enter console'}
               <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
                 <path d="M2 8h11M9 4l4 4-4 4" />

@@ -3,7 +3,7 @@ import type { FilterState, SecurityEvent } from '../types/security';
 import { threatTypeLabel } from '../constants/charts';
 import {
   agoLabel,
-  ageMinutes,
+  captureAgeMinutes,
   isOpen,
   isOverSla,
   severityOf,
@@ -248,7 +248,7 @@ export function TriageView(props: TriageViewProps) {
                     </span>
                   </span>
                   <span className="right">
-                    <b>{agoLabel(ageMinutes(event))}</b>
+                    <b>{agoLabel(captureAgeMinutes(event))}</b>
                     <span className={`sla${over ? ' over' : ''}`}>{slaRemainingLabel(event)}</span>
                   </span>
                 </div>
