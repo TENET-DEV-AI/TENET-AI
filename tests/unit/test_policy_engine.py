@@ -186,3 +186,19 @@ def test_nested_yaml_merge_through_an_anchor_is_allowed(tmp_path):
         "  - *derived\n"
     )
     assert [rule.id for rule in load_policy(path).rules] == ["outer", "derived"]
+
+
+@pytest.mark.parametrize("default", ["allow", "whatever", None])
+def test_a_policy_file_cannot_open_up_unmatched_actions(default):
+    with pytest.raises(PolicyError):
+        PolicyEngine.from_document({"default": default, "rules": []})
+
+
+def test_a_policy_file_may_ask_for_approval_by_default():
+    policy = PolicyEngine.from_document({"default": "require_approval", "rules": []})
+    assert policy.evaluate("anything").verdict == "require_approval"
+
+
+def test_non_string_rule_keys_are_a_policy_error():
+    with pytest.raises(PolicyError):
+        PolicyEngine.from_document({"rules": [{"id": "r", "effect": "block", 1: "x", "y": 2}]})

@@ -3,6 +3,9 @@
 An approval-gated action waits here. It runs only if a person approves it before the timeout;
 a denial, a timeout or an unknown request id all mean it does not run. Nothing is approved by
 default and a decision, once made, cannot be changed.
+
+Timeouts are measured on a monotonic clock so that changing the system time cannot stretch or cut
+an approval window. ``created_at`` and ``decided_at`` are wall-clock times for the audit trail.
 """
 
 from __future__ import annotations
@@ -34,20 +37,22 @@ class ApprovalRequest:
     tool: str
     scope: str
     rule_id: Optional[str]
-    created_at: float
-    expires_at: float
+    created_at: float  # wall clock
+    expires_at: float  # monotonic deadline
     status: str = PENDING
     decided_by: Optional[str] = None
     decided_at: Optional[float] = None
     note: str = ""
+    settled_at: Optional[float] = None  # monotonic; drives retention
 
 
 class ApprovalQueue:
     def __init__(
         self,
         timeout_seconds: float = 900.0,
-        clock: Callable[[], float] = time.time,
+        clock: Callable[[], float] = time.monotonic,
         retention_seconds: float = 3600.0,
+        wall_clock: Callable[[], float] = time.time,
     ) -> None:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be a positive, finite number")
@@ -56,6 +61,7 @@ class ApprovalQueue:
         self.timeout_seconds = timeout_seconds
         self.retention_seconds = retention_seconds
         self._clock = clock
+        self._wall_clock = wall_clock
         self._requests: dict[str, ApprovalRequest] = {}
         self._lock = threading.Lock()
 
@@ -63,7 +69,7 @@ class ApprovalQueue:
         now = self._clock()
         request = ApprovalRequest(
             id=uuid.uuid4().hex, action=action, tool=tool, scope=scope, rule_id=rule_id,
-            created_at=now, expires_at=now + self.timeout_seconds,
+            created_at=self._wall_clock(), expires_at=now + self.timeout_seconds,
         )
         with self._lock:
             self._prune(now)
@@ -74,13 +80,14 @@ class ApprovalQueue:
         """Drop settled requests once they are older than the retention period."""
         for request_id, request in list(self._requests.items()):
             self._expire_if_due(request, now)
-            if request.status != PENDING and now - (request.decided_at or request.expires_at) >= self.retention_seconds:
+            if request.status != PENDING and now - request.settled_at >= self.retention_seconds:
                 del self._requests[request_id]
 
     def _expire_if_due(self, request: ApprovalRequest, now: float) -> None:
         if request.status == PENDING and now >= request.expires_at:
             request.status = EXPIRED
-            request.decided_at = request.expires_at
+            request.decided_at = request.created_at + self.timeout_seconds
+            request.settled_at = request.expires_at
 
     def get(self, request_id: str) -> ApprovalRequest:
         with self._lock:
@@ -97,6 +104,8 @@ class ApprovalQueue:
             return [replace(r) for r in self._requests.values() if r.status == PENDING]
 
     def decide(self, request_id: str, approve: bool, approver: str, note: str = "") -> ApprovalRequest:
+        if not isinstance(approve, bool):
+            raise ApprovalError("approve must be True or False")
         if not approver.strip():
             raise ApprovalError("a decision needs a named approver")
         with self._lock:
@@ -109,7 +118,8 @@ class ApprovalQueue:
                 raise ApprovalError(f"request {request_id} is already {request.status}")
             request.status = APPROVED if approve else DENIED
             request.decided_by = approver
-            request.decided_at = now
+            request.decided_at = self._wall_clock()
+            request.settled_at = now
             request.note = note
             return replace(request)
 
@@ -137,7 +147,6 @@ class ApprovalQueue:
             if (request.action, request.tool, request.scope) != (action, tool, scope):
                 return False
             request.status = USED
-            request.decided_at = request.decided_at if request.decided_at is not None else now
             return True
 
 
@@ -148,10 +157,6 @@ class GateResult:
     action: str
     tool: str
     scope: str
-
-    @property
-    def runs_now(self) -> bool:
-        return self.decision.verdict == ALLOW
 
 
 class ActionGate:

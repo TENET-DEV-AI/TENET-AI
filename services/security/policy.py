@@ -3,7 +3,9 @@
 Rules match on action, tool and scope using shell-style wildcards. When several rules match,
 the strictest effect wins (block over require_approval over allow), so a broad allow rule can
 never override a specific block. An action that matches no rule gets ``default_effect``, which
-is ``block`` unless the caller says otherwise: unknown actions fail closed.
+is ``block`` unless the caller says otherwise: unknown actions fail closed. A policy file may set
+``default`` to ``block`` or ``require_approval``; allowing unmatched actions has to be asked for in
+code through ``default_effect``.
 
 Rules are plain dicts so they load from JSON anywhere and from YAML when PyYAML is installed::
 
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional, Union
@@ -91,7 +94,7 @@ def parse_rule(raw: Any, index: int = 0) -> Rule:
         values[key] = value
     unknown = set(raw) - {"id", "effect", "action", "tool", "scope", "reason"}
     if unknown:
-        raise PolicyError(f"rule {rule_id!r}: unknown field(s) {', '.join(sorted(unknown))}")
+        raise PolicyError(f"rule {rule_id!r}: unknown field(s) {', '.join(sorted(map(str, unknown)))}")
     return Rule(id=rule_id, effect=effect, **values)
 
 
@@ -103,8 +106,7 @@ class PolicyEngine:
         for rule in self.rules:
             if rule.effect not in EFFECTS:
                 raise PolicyError(f"rule {rule.id!r}: effect must be one of {', '.join(EFFECTS)}, got {rule.effect!r}")
-        ids = [r.id for r in self.rules]
-        duplicates = sorted({i for i in ids if ids.count(i) > 1})
+        duplicates = sorted(i for i, n in Counter(r.id for r in self.rules).items() if n > 1)
         if duplicates:
             raise PolicyError(f"duplicate rule id(s): {', '.join(duplicates)}")
         self.default_effect = default_effect
@@ -117,7 +119,10 @@ class PolicyEngine:
         if unknown:
             raise PolicyError(f"policy has unknown field(s) {', '.join(sorted(map(str, unknown)))}")
         rules = [parse_rule(raw, i) for i, raw in enumerate(document["rules"])]
-        return cls(rules, default_effect=document.get("default", BLOCK))
+        default = document.get("default", BLOCK)
+        if default not in (BLOCK, REQUIRE_APPROVAL):
+            raise PolicyError(f"policy default must be {BLOCK} or {REQUIRE_APPROVAL}, got {default!r}")
+        return cls(rules, default_effect=default)
 
     def evaluate(self, action: str, tool: Optional[str] = None, scope: Optional[str] = None) -> Decision:
         matched = [r for r in self.rules if r.matches(action, tool, scope)]

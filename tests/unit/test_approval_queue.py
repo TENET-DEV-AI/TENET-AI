@@ -31,21 +31,21 @@ def make(timeout=60.0):
 def test_allowed_action_runs_without_a_request():
     gate, _ = make()
     result = gate.check("read.file", "ci", "dev/x")
-    assert result.runs_now and result.request_id is None and gate.may_execute(result)
+    assert result.decision.verdict == ALLOW and result.request_id is None and gate.may_execute(result)
     assert gate.queue.pending() == []
 
 
 def test_blocked_action_never_executes():
     gate, _ = make()
     result = gate.check("wipe.disk", "ci", "dev/x")
-    assert result.decision.verdict == BLOCK and not result.runs_now and not gate.may_execute(result)
+    assert result.decision.verdict == BLOCK and not gate.may_execute(result)
     assert gate.queue.pending() == []
 
 
 def test_gated_action_waits_for_a_decision():
     gate, _ = make()
     result = gate.check("deploy.prod", "ci", "prod/api")
-    assert result.decision.verdict == REQUIRE_APPROVAL and not result.runs_now
+    assert result.decision.verdict == REQUIRE_APPROVAL
     assert not gate.may_execute(result)
     [pending] = gate.queue.pending()
     assert pending.id == result.request_id and pending.status == PENDING and pending.rule_id == "gate"
@@ -115,7 +115,7 @@ def test_decision_reads_the_clock_once():
     queue = ApprovalQueue(60, lambda: next(ticks))
     request = queue.submit("deploy.x", "ci", "dev/x")
     decided = queue.decide(request.id, True, "alice")
-    assert decided.status == APPROVED and decided.decided_at == 1059.0 < request.expires_at
+    assert decided.status == APPROVED and decided.settled_at == 1059.0 < request.expires_at
 
 
 def test_decide_never_stamps_a_decision_after_the_deadline():
@@ -201,3 +201,32 @@ def test_gate_requires_tool_and_scope():
     gate, _ = make()
     with pytest.raises(TypeError):
         gate.check("read.file")
+
+
+def test_policy_is_checked_again_after_approval():
+    gate, _ = make()
+    result = gate.check("deploy.prod", "ci", "dev/x")
+    gate.queue.decide(result.request_id, True, "alice")
+    gate.policy = PolicyEngine([Rule("freeze", BLOCK, action="deploy.*")])
+    assert not gate.may_execute(result)
+    assert gate.queue.get(result.request_id).status == APPROVED
+
+
+@pytest.mark.parametrize("answer", ["false", "yes", 1, None])
+def test_only_a_real_boolean_decides(answer):
+    gate, _ = make()
+    result = gate.check("deploy.prod", "ci", "dev/x")
+    with pytest.raises(ApprovalError):
+        gate.queue.decide(result.request_id, answer, "alice")
+    assert gate.queue.get(result.request_id).status == PENDING
+
+
+def test_changing_the_system_time_does_not_move_the_deadline():
+    clock, wall = Clock(), Clock()
+    queue = ApprovalQueue(60, clock, wall_clock=wall)
+    request = queue.submit("deploy.x", "ci", "dev/x")
+    wall.now += 86400
+    assert queue.get(request.id).status == PENDING
+    wall.now -= 172800
+    clock.now += 60
+    assert queue.get(request.id).status == EXPIRED
