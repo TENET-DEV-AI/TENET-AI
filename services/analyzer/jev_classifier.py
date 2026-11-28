@@ -145,8 +145,13 @@ def load_jev_settings() -> JevSettings:
     if missing:
         raise EnvValidationError(missing, {})
 
-    parts = urlsplit(url)
-    if parts.scheme not in schemes or not parts.hostname:
+    try:
+        parts = urlsplit(url)
+        usable = parts.scheme in schemes and bool(parts.hostname)
+    except ValueError:
+        # urlsplit's own message can include the netloc, so it is dropped.
+        usable = False
+    if not usable:
         # The URL is not echoed back because it may carry credentials.
         reason = f"must be a {' or '.join(schemes)} URL for {backend}"
         raise EnvValidationError([], {"TENET_JEV_URL": reason})
