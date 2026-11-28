@@ -139,6 +139,15 @@ def test_load_jev_settings_api_defaults(monkeypatch):
     assert "secret-value" not in repr(settings)
 
 
+def test_settings_repr_hides_url_and_key():
+    settings = jev.JevSettings(
+        backend="jev_local", url="http://user:secret@jev.test:9000", api_key="test-key"
+    )
+
+    assert "secret" not in repr(settings)
+    assert "test-key" not in repr(settings)
+
+
 def test_load_jev_settings_local_drops_api_key(monkeypatch):
     monkeypatch.setenv("TENET_JEV_BACKEND", "jev_local")
     monkeypatch.setenv("TENET_JEV_URL", "http://jev:9000/")
@@ -453,6 +462,36 @@ def test_local_one_failed_question_fails_the_lookup():
     assert classify(classifier)["reason"] == "http_400"
 
 
+def test_local_failed_question_cancels_the_others():
+    settings = jev.JevSettings(backend="jev_local", url="http://jev.test:9000", timeout=30.0)
+    cancelled = []
+
+    async def reply(request):
+        kind = json.loads(request.content)["kind"]
+        if kind == "score":
+            return httpx.Response(400, json={"error": {}})
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.append(kind)
+            raise
+        return httpx.Response(500)
+
+    async def run():
+        classifier = jev.JevClassifier(settings, 0.75, transport=httpx.MockTransport(reply))
+        result = await classifier.classify(BENIGN_PROMPT)
+        # checked before asyncio.run cleans up, so leftover tasks would show here
+        still_running = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await classifier.close()
+        return result, still_running
+
+    result, still_running = asyncio.run(asyncio.wait_for(run(), timeout=5))
+
+    assert result["reason"] == "http_400"
+    assert sorted(cancelled) == ["choice", "noul"]
+    assert still_running == []
+
+
 # Ensemble with heuristics and sklearn
 
 
@@ -615,6 +654,41 @@ def test_queued_event_stores_jev_details(monkeypatch):
     assert stored["tenet:alerts"]["event_id"] == "e1"
 
 
+def test_interrupted_queued_event_goes_back_on_the_queue(monkeypatch):
+    calls = []
+
+    class SlowJev:
+        async def classify(self, prompt):
+            calls.append("classify")
+            await asyncio.sleep(30)
+
+    class FakeRedis:
+        async def set(self, key, value, ex):
+            calls.append(("set", key))
+
+        async def lpush(self, key, value):
+            calls.append(("lpush", key))
+
+        async def rpush(self, key, value):
+            calls.append(("rpush", key, value))
+
+    monkeypatch.setattr(analyzer, "jev_classifier", SlowJev())
+    monkeypatch.setattr(analyzer, "redis_client", FakeRedis())
+    event_json = json.dumps({"event_id": "e2", "prompt": BENIGN_PROMPT})
+
+    async def run():
+        task = asyncio.create_task(analyzer._process_single_event(event_json))
+        while "classify" not in calls:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(asyncio.wait_for(run(), timeout=5))
+
+    assert calls == ["classify", ("rpush", "tenet:events:queue", event_json)]
+
+
 def test_load_jev_classifier_follows_settings(monkeypatch):
     monkeypatch.setattr(analyzer, "JEV_SETTINGS", LOCAL)
     analyzer.load_jev_classifier()
@@ -653,6 +727,9 @@ def test_benchmark_compare_uses_answered_prompts_only():
 
     assert (report["answered_samples"], report["total_samples"]) == (2, 3)
     assert report["failures"] == {"http_500": 1}
+    # the failed call still counts for latency
+    assert report["jev_calls"] == 3
+    assert "over all 3 calls" in to_markdown(report)
     assert report["systems"]["current"]["verdict"]["recall"] == 0.0
     assert report["systems"]["current+jev"]["verdict"]["recall"] == 1.0
     assert "answered 2 of 3" in to_markdown(report)
