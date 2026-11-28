@@ -196,6 +196,18 @@ def test_load_jev_settings_local_drops_api_key(monkeypatch):
             },
             "TENET_JEV_CACHE_SIZE",
         ),
+        # urlsplit raises ValueError for both of these.
+        (
+            {"TENET_JEV_BACKEND": "jev_local", "TENET_JEV_URL": "http://[::1"},
+            "TENET_JEV_URL",
+        ),
+        (
+            {
+                "TENET_JEV_BACKEND": "jev_local",
+                "TENET_JEV_URL": "http://user:pw@jev\uff03test",
+            },
+            "TENET_JEV_URL",
+        ),
     ],
 )
 def test_load_jev_settings_rejects_bad_config(monkeypatch, env, bad_name):
@@ -687,6 +699,63 @@ def test_interrupted_queued_event_goes_back_on_the_queue(monkeypatch):
     asyncio.run(asyncio.wait_for(run(), timeout=5))
 
     assert calls == ["classify", ("rpush", "tenet:events:queue", event_json)]
+
+
+def test_event_cancelled_while_being_stored_goes_back_on_the_queue(monkeypatch):
+    calls = []
+
+    class SlowStoreRedis:
+        async def set(self, key, value, ex):
+            calls.append("set")
+            await asyncio.sleep(30)
+
+        async def rpush(self, key, value):
+            calls.append(("rpush", key, value))
+
+    monkeypatch.setattr(analyzer, "redis_client", SlowStoreRedis())
+    event_json = json.dumps({"event_id": "e3", "prompt": BENIGN_PROMPT})
+
+    async def run():
+        task = asyncio.create_task(analyzer._process_single_event(event_json))
+        while "set" not in calls:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(asyncio.wait_for(run(), timeout=5))
+
+    assert calls == ["set", ("rpush", "tenet:events:queue", event_json)]
+
+
+def test_hung_requeue_times_out_and_keeps_the_cancellation(monkeypatch, caplog):
+    calls = []
+
+    class HungRedis:
+        async def set(self, key, value, ex):
+            calls.append("set")
+            await asyncio.sleep(30)
+
+        async def rpush(self, key, value):
+            calls.append("rpush")
+            await asyncio.sleep(30)
+
+    monkeypatch.setattr(analyzer, "redis_client", HungRedis())
+    monkeypatch.setattr(analyzer, "REQUEUE_TIMEOUT", 0.05)
+    event_json = json.dumps({"event_id": "e4", "prompt": BENIGN_PROMPT})
+
+    async def run():
+        task = asyncio.create_task(analyzer._process_single_event(event_json))
+        while "set" not in calls:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(asyncio.wait_for(run(), timeout=5))
+
+    assert calls == ["set", "rpush"]
+    assert "could not be requeued" in caplog.text
 
 
 def test_load_jev_classifier_follows_settings(monkeypatch):
