@@ -88,7 +88,8 @@ class JevSettings:
     """Validated ``TENET_JEV_*`` settings."""
 
     backend: str = "sklearn"
-    url: str = ""
+    # The URL can carry credentials, so neither it nor the key shows up in repr.
+    url: str = field(default="", repr=False)
     api_key: str = field(default="", repr=False)
     model: str = DEFAULT_MODEL
     timeout: float = 3.0
@@ -425,11 +426,20 @@ class JevClassifier:
     async def _ask_local(self, text: str) -> dict:
         """Ask the three questions as separate ``/v1/decide`` requests."""
         options = [f"{name}: {description}" for name, description in THREAT_CATEGORIES.items()]
-        noul, choice, score = await asyncio.gather(
-            self._decide("noul", text, MALICIOUS_QUESTION),
-            self._decide("choice", text, THREAT_QUESTION, options),
-            self._decide("score", text, LOCAL_SEVERITY_QUESTION),
-        )
+        tasks = [
+            asyncio.create_task(self._decide("noul", text, MALICIOUS_QUESTION)),
+            asyncio.create_task(self._decide("choice", text, THREAT_QUESTION, options)),
+            asyncio.create_task(self._decide("score", text, LOCAL_SEVERITY_QUESTION)),
+        ]
+        try:
+            noul, choice, score = await asyncio.gather(*tasks)
+        except BaseException:
+            # gather does not cancel the other questions when one fails, so stop
+            # them here instead of leaving requests running against the server.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         top_level = len(LOCAL_SCORE_OPTIONS) - 1
         expected_level = sum(level * p for level, p in enumerate(score[0]))
         return {
