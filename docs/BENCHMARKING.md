@@ -38,6 +38,25 @@ python scripts/run_benchmark.py
 
 ---
 
+## Comparing the Jev Backend
+
+`scripts/benchmark_jev.py` scores the same dataset with sklearn alone, the current pipeline,
+Jev alone and the pipeline plus Jev. It needs a working
+[Jev backend](../services/analyzer/README.md#jev-classifier-backend-optional):
+
+```bash
+TENET_JEV_BACKEND=jev_local TENET_JEV_URL=http://your-vllm-host:8000 \
+  python scripts/benchmark_jev.py
+```
+
+With `TENET_JEV_BACKEND=jev_api` (and `TENET_JEV_API_KEY`) every dataset prompt is sent to
+TypeSafe. The reports go to `reports/benchmark_jev.json` and `reports/benchmark_jev.md`.
+Prompts Jev did not answer are listed as failures and left out of every row, and no report is
+written if it answered none. The Jev latency numbers include the failed calls (timeouts too). The script accepts `--dataset`, `--output-json`, `--output-md` and
+`--threshold`.
+
+---
+
 ## 📈 CI Integration & Regression Guarding
 
 Benchmarking runs automatically in GitHub Actions CI whenever a Pull Request modifies detection logic:

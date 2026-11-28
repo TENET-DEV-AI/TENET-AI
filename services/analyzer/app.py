@@ -23,6 +23,7 @@ except ImportError:
 # Configure logging
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from services.analyzer.jev_classifier import JevClassifier, JevSettings, load_jev_settings
 from services.utils.logging_config import setup_logging
 from services.security import SecurityManager
 from services.utils.metrics import PrometheusMiddleware, increment_detection
@@ -56,6 +57,12 @@ API_PORT = _ENV_DEFAULTS["API_PORT"]
 MODEL_PATH = _ENV_DEFAULTS["MODEL_PATH"]
 PROMPT_INJECTION_THRESHOLD = _ENV_DEFAULTS["PROMPT_INJECTION_THRESHOLD"]
 SHUTDOWN_TIMEOUT = _ENV_DEFAULTS["SHUTDOWN_TIMEOUT"]
+# Longest a cancelled event waits for Redis to take it back.
+REQUEUE_TIMEOUT = 1.0
+JEV_SETTINGS = JevSettings()
+
+# Used to decide whether a Jev answer is stricter than the local detectors.
+_VERDICT_RANK = {"benign": 0, "suspicious": 1, "malicious": 2}
 
 
 def load_config() -> None:
@@ -65,9 +72,10 @@ def load_config() -> None:
         EnvValidationError: If any value is invalid. Lists every bad variable.
     """
     global REDIS_HOST, REDIS_PORT, API_HOST, API_PORT, MODEL_PATH
-    global PROMPT_INJECTION_THRESHOLD, SHUTDOWN_TIMEOUT
+    global PROMPT_INJECTION_THRESHOLD, SHUTDOWN_TIMEOUT, JEV_SETTINGS
 
     config = validate_env_vars([], optional_vars=_ENV_DEFAULTS, types=_ENV_TYPES)
+    JEV_SETTINGS = load_jev_settings()
 
     REDIS_HOST = config["REDIS_HOST"]
     REDIS_PORT = config["REDIS_PORT"]
@@ -111,6 +119,7 @@ app.mount("/metrics", metrics_app)
 redis_client: Optional[redis.Redis] = None
 ml_model = None
 vectorizer = None
+jev_classifier: Optional[JevClassifier] = None
 stop_event: Optional[asyncio.Event] = None
 background_task = None
 security = SecurityManager(
@@ -174,6 +183,19 @@ def load_ml_models():
         return False
 
 
+def load_jev_classifier() -> None:
+    """Create the Jev classifier if ``TENET_JEV_BACKEND`` enables one."""
+    global jev_classifier
+    if JEV_SETTINGS.backend == "sklearn":
+        jev_classifier = None
+        return
+
+    jev_classifier = JevClassifier(JEV_SETTINGS, PROMPT_INJECTION_THRESHOLD)
+    logger.info(f"Jev classifier enabled with backend {JEV_SETTINGS.backend}")
+    if JEV_SETTINGS.backend == "jev_api":
+        logger.warning("jev_api sends analyzed prompts to a third party service")
+
+
 @app.on_event("startup")
 
 async def startup():
@@ -215,6 +237,7 @@ async def startup():
     
     # Load ML models
     load_ml_models()
+    load_jev_classifier()
 
     
     # Create stop event and start background processor
@@ -232,7 +255,8 @@ async def shutdown():
         1. Sets the stop event to signal the background queue processor to exit.
         2. Waits up to ``SHUTDOWN_TIMEOUT`` seconds for the background task to
         finish; cancels it if the timeout is exceeded.
-        3. Closes the Redis connection.
+        3. Closes the Jev HTTP client, if one is enabled.
+        4. Closes the Redis connection.
 
         Raises:
             Exception: Logged internally; shutdown always completes even if
@@ -257,6 +281,12 @@ async def shutdown():
                 await background_task
             except asyncio.CancelledError:  # NOSONAR - Don't re-raise in shutdown handler, cancellation is expected
                 logger.info("Background task cancelled successfully")
+
+    if jev_classifier:
+        try:
+            await jev_classifier.close()
+        except Exception:
+            logger.debug("Jev client close failed during shutdown", exc_info=True)
 
     # Close Redis connection
     if redis_client:
@@ -344,8 +374,8 @@ async def analyze_prompt(
     """Analyze a prompt for security threats.
 
         Authenticates the caller via API key, runs both heuristic and ML-based
-        detection on the submitted prompt, logs an audit record, and returns a
-        structured risk assessment.
+        detection on the submitted prompt (plus Jev when enabled), logs an audit
+        record, and returns a structured risk assessment.
 
         Args:
             request (AnalysisRequest): The analysis request containing:
@@ -391,7 +421,7 @@ async def analyze_prompt(
         """
     auth = await security.require_auth(x_api_key, required_permission="analyze")
     prompt = request.prompt
-    result = run_analysis(prompt)
+    result = await analyze_with_backends(prompt)
     
     increment_detection(service="analyzer", threat_type=result.threat_type, verdict=result.verdict)
     
@@ -479,6 +509,62 @@ def run_analysis(prompt: str) -> AnalysisResponse:
             confidence=0.85,
             details={"method": "combined"}
         )
+
+
+async def analyze_with_backends(prompt: str) -> AnalysisResponse:
+    """Run the local detectors, then Jev as an extra signal when it is enabled.
+
+    Jev is not called when the local result is already ``"malicious"``, since it
+    is only allowed to make a verdict stricter.
+
+    Args:
+        prompt: The raw prompt text to analyze.
+
+    Returns:
+        The :func:`run_analysis` result, with ``details["jev"]`` added when a Jev
+        backend is enabled.
+    """
+    result = run_analysis(prompt)
+    if jev_classifier is None:
+        return result
+
+    if result.verdict == "malicious":
+        jev_result = {"status": "skipped", "reason": "already_malicious"}
+    else:
+        jev_result = await jev_classifier.classify(prompt)
+    return apply_jev_result(result, jev_result)
+
+
+def apply_jev_result(baseline: AnalysisResponse, jev_result: dict) -> AnalysisResponse:
+    """Combine a Jev result with the heuristic and sklearn result.
+
+    A prompt can try to steer Jev, so its answer can raise ``risk_score`` and
+    the verdict but never lower them. If Jev was skipped or unavailable the
+    baseline is returned unchanged apart from ``details["jev"]``.
+
+    Args:
+        baseline: Result from :func:`run_analysis`.
+        jev_result: Result from ``JevClassifier.classify`` or a skip marker.
+
+    Returns:
+        The combined result.
+    """
+    details = {**baseline.details, "jev": jev_result}
+    update = {"details": details}
+
+    if jev_result["status"] == "ok":
+        update["risk_score"] = max(baseline.risk_score, jev_result["risk_score"])
+        if _VERDICT_RANK[jev_result["verdict"]] > _VERDICT_RANK[baseline.verdict]:
+            update["verdict"] = jev_result["verdict"]
+            update["threat_type"] = jev_result["threat_type"]
+            update["confidence"] = jev_result["confidence"]
+            details["method"] = jev_result["backend"]
+            if jev_result["verdict"] == "suspicious":
+                details["recommendation"] = "manual_review"
+            else:
+                details.pop("recommendation", None)
+
+    return baseline.model_copy(update=update)
 
 
 def heuristic_analysis(prompt: str) -> dict:
@@ -681,7 +767,7 @@ async def _update_and_store_event(event: dict, event_id: str, result: AnalysisRe
             event_id (str): Unique identifier used as part of the Redis key
                 ``tenet:event:<event_id>``.
             result (AnalysisResponse): The analysis result from
-                :func:`run_analysis`.
+                :func:`analyze_with_backends`.
 
         Returns:
             None: Returns early without writing if ``redis_client`` is unavailable.
@@ -715,11 +801,26 @@ async def _update_and_store_event(event: dict, event_id: str, result: AnalysisRe
         logger.warning(f"Alert: Malicious event detected - {event_id}")
 
 
+async def _requeue_event(event_json: str, event_id: str) -> None:
+    """Put an unfinished event back where :func:`process_event_queue` pops next."""
+    if not redis_client:
+        logger.error(f"Event {event_id} was interrupted and could not be requeued: no Redis client")
+        return
+    try:
+        await asyncio.wait_for(
+            redis_client.rpush("tenet:events:queue", event_json),
+            timeout=REQUEUE_TIMEOUT,
+        )
+        logger.warning(f"Analysis of event {event_id} was interrupted, put it back on the queue")
+    except Exception:
+        logger.exception(f"Event {event_id} was interrupted and could not be requeued")
+
+
 async def _process_single_event(event_json: str):
     """Process a single event from the queue.
 
         Deserializes the JSON event, validates its structure and ``event_id``,
-        truncates oversized prompts, runs :func:`run_analysis`, and delegates
+        truncates oversized prompts, runs :func:`analyze_with_backends`, and delegates
         storage to :func:`_update_and_store_event`.
 
         Validation steps (any failure causes an early return with a warning log):
@@ -736,8 +837,10 @@ async def _process_single_event(event_json: str):
             None
 
         Raises:
-            Exception: All exceptions are caught and logged internally; this
-                coroutine never propagates to its caller.
+            asyncio.CancelledError: Re-raised after the unfinished event has
+                been put back on the queue.
+            Exception: Analysis and Redis errors are not handled here;
+                :func:`process_event_queue` catches and logs them.
 
         Note:
             This is a private helper called by :func:`process_event_queue`.
@@ -793,13 +896,20 @@ async def _process_single_event(event_json: str):
         logger.warning(f"Event {event_id} has overly long prompt ({len(prompt)} chars), truncating")
         prompt = prompt[:10000]
     
-    # Analyze the prompt
-    result = run_analysis(prompt)
-    
-    increment_detection(service="analyzer_bg", threat_type=result.threat_type, verdict=result.verdict)
-    
-    # Update and store event
-    await _update_and_store_event(event, event_id, result)
+    # rpop already took the event off the queue, and a Jev call or a Redis write
+    # can outlast SHUTDOWN_TIMEOUT, so a cancellation puts it back before the
+    # task stops. An event cut off while being stored gets processed again.
+    try:
+        # Analyze the prompt
+        result = await analyze_with_backends(prompt)
+
+        increment_detection(service="analyzer_bg", threat_type=result.threat_type, verdict=result.verdict)
+
+        # Update and store event
+        await _update_and_store_event(event, event_id, result)
+    except asyncio.CancelledError:
+        await _requeue_event(event_json, event_id)
+        raise
 
 
 async def process_event_queue():
