@@ -26,7 +26,7 @@ jobs:
     steps:
       - name: Check maintainer permission
         id: permission-check
-        uses: actions/github-script@v9
+        uses: actions/github-script@v9.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -43,7 +43,7 @@ jobs:
 
       - name: React with 👀 to acknowledge command
         if: steps.permission-check.outputs.allowed == 'true'
-        uses: actions/github-script@v9
+        uses: actions/github-script@v9.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -56,7 +56,7 @@ jobs:
 
       - name: Assign TENET agent to issue
         if: steps.permission-check.outputs.allowed == 'true'
-        uses: actions/github-script@v9
+        uses: actions/github-script@v9.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
