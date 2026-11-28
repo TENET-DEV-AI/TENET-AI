@@ -172,3 +172,17 @@ def test_unhashable_yaml_key_is_a_policy_error(tmp_path):
     path.write_text("? [a, b]\n: 1\nrules: []\n")
     with pytest.raises(PolicyError):
         load_policy(path)
+
+
+def test_nested_yaml_merge_through_an_anchor_is_allowed(tmp_path):
+    pytest.importorskip("yaml")
+    path = tmp_path / "p.yaml"
+    path.write_text(
+        "rules:\n"
+        "  - <<: &derived\n"
+        "      <<: {id: base, effect: allow, action: 'pay.*'}\n"
+        "      id: derived\n"
+        "    id: outer\n"
+        "  - *derived\n"
+    )
+    assert [rule.id for rule in load_policy(path).rules] == ["outer", "derived"]
