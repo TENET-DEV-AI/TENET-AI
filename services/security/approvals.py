@@ -5,7 +5,7 @@ a denial, a timeout or an unknown request id all mean it does not run. Nothing i
 default and a decision, once made, cannot be changed.
 
 Timeouts are measured on a monotonic clock so that changing the system time cannot stretch or cut
-an approval window. ``created_at`` and ``decided_at`` are wall-clock times for the audit trail.
+an approval window. ``created_at``, ``expires_at`` and ``decided_at`` are wall-clock times for the audit trail.
 """
 
 from __future__ import annotations
@@ -38,7 +38,8 @@ class ApprovalRequest:
     scope: str
     rule_id: Optional[str]
     created_at: float  # wall clock
-    expires_at: float  # monotonic deadline
+    expires_at: float  # wall clock, for display and audit
+    deadline: float  # monotonic reading that actually enforces the timeout
     status: str = PENDING
     decided_by: Optional[str] = None
     decided_at: Optional[float] = None
@@ -67,9 +68,11 @@ class ApprovalQueue:
 
     def submit(self, action: str, tool: str, scope: str, rule_id: Optional[str] = None) -> ApprovalRequest:
         now = self._clock()
+        created_at = self._wall_clock()
         request = ApprovalRequest(
             id=uuid.uuid4().hex, action=action, tool=tool, scope=scope, rule_id=rule_id,
-            created_at=self._wall_clock(), expires_at=now + self.timeout_seconds,
+            created_at=created_at, expires_at=created_at + self.timeout_seconds,
+            deadline=now + self.timeout_seconds,
         )
         with self._lock:
             self._prune(now)
@@ -84,10 +87,11 @@ class ApprovalQueue:
                 del self._requests[request_id]
 
     def _expire_if_due(self, request: ApprovalRequest, now: float) -> None:
-        if request.status == PENDING and now >= request.expires_at:
+        if request.status == PENDING and now >= request.deadline:
             request.status = EXPIRED
-            request.decided_at = request.created_at + self.timeout_seconds
-            request.settled_at = request.expires_at
+            # Expiry is noticed lazily, so step back from the current wall time to the deadline.
+            request.decided_at = self._wall_clock() - (now - request.deadline)
+            request.settled_at = request.deadline
 
     def get(self, request_id: str) -> ApprovalRequest:
         with self._lock:

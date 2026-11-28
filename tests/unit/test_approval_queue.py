@@ -115,14 +115,14 @@ def test_decision_reads_the_clock_once():
     queue = ApprovalQueue(60, lambda: next(ticks))
     request = queue.submit("deploy.x", "ci", "dev/x")
     decided = queue.decide(request.id, True, "alice")
-    assert decided.status == APPROVED and decided.settled_at == 1059.0 < request.expires_at
+    assert decided.status == APPROVED and decided.settled_at == 1059.0 < request.deadline
 
 
 def test_decide_never_stamps_a_decision_after_the_deadline():
     clock = Clock()
     queue = ApprovalQueue(60, clock)
     request = queue.submit("deploy.x", "ci", "dev/x")
-    clock.now = request.expires_at
+    clock.now = request.deadline
     with pytest.raises(ApprovalError):
         queue.decide(request.id, True, "alice")
     assert queue.get(request.id).status == EXPIRED
@@ -230,3 +230,16 @@ def test_changing_the_system_time_does_not_move_the_deadline():
     wall.now -= 172800
     clock.now += 60
     assert queue.get(request.id).status == EXPIRED
+
+
+def test_public_times_are_wall_clock_and_survive_a_clock_adjustment():
+    clock, wall = Clock(), Clock()
+    clock.now, wall.now = 5.0, 1_000_000.0
+    queue = ApprovalQueue(60, clock, wall_clock=wall)
+    request = queue.submit("deploy.x", "ci", "dev/x")
+    assert (request.created_at, request.expires_at) == (1_000_000.0, 1_000_060.0)
+    wall.now += 3600  # system time is moved while the request is pending
+    clock.now += 90  # noticed 30 seconds after the deadline
+    wall.now += 90
+    assert queue.get(request.id).decided_at == wall.now - 30
+
