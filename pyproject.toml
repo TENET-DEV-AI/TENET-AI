@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tenet-firewall"
+version = "0.1.0"
+description = "Defensive middleware for LLM applications — inspect every prompt before it reaches the model."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "TENET AI contributors" }]
+keywords = [
+  "llm",
+  "security",
+  "prompt-injection",
+  "jailbreak",
+  "guardrails",
+  "firewall",
+  "ai-security",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Information Technology",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = ["requests>=2.31"]
+
+[project.urls]
+Homepage = "https://github.com/TENET-DEV-AI/TENET-AI"
+Documentation = "https://github.com/TENET-DEV-AI/TENET-AI/tree/main/docs"
+Issues = "https://github.com/TENET-DEV-AI/TENET-AI/issues"
+
+[tool.setuptools]
+# The distribution ships the client only. The ingest and analyzer services run
+# from the repository — `docker compose up -d`.
+packages = ["tenet_firewall"]
+
+[tool.setuptools.package-data]
+tenet_firewall = ["py.typed"]

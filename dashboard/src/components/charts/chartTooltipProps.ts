@@ -1,18 +1,18 @@
 /** Shared Recharts tooltip styling for dark theme readability */
 export const CHART_TOOLTIP_PROPS = {
   contentStyle: {
-    background: '#18181b',
-    border: '1px solid #27272a',
+    background: '#1A1512',
+    border: '1px solid rgba(239,233,221,.10)',
     borderRadius: 8,
-    color: '#e4e4e7',
+    color: '#EFE9DD',
   },
   labelStyle: {
-    color: '#e4e4e7',
+    color: '#EFE9DD',
     fontWeight: 600,
     marginBottom: 4,
   },
   itemStyle: {
-    color: '#e4e4e7',
+    color: '#EFE9DD',
   },
   wrapperStyle: {
     outline: 'none',

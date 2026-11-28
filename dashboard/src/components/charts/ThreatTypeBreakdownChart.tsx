@@ -28,6 +28,7 @@ export function ThreatTypeBreakdownChart({ data, onFilter }: Props) {
       <ResponsiveContainer width="100%" height={300}>
         <PieChart>
           <Pie
+            isAnimationActive={false}
             data={data}
             dataKey="value"
             nameKey="name"
@@ -55,7 +56,7 @@ export function ThreatTypeBreakdownChart({ data, onFilter }: Props) {
           />
           <Legend
             verticalAlign="bottom"
-            formatter={(value: string) => <span style={{ color: '#a1a1aa', fontSize: 12 }}>{value}</span>}
+            formatter={(value: string) => <span style={{ color: '#8A8175', fontSize: 12 }}>{value}</span>}
           />
         </PieChart>
       </ResponsiveContainer>

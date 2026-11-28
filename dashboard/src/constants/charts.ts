@@ -1,19 +1,19 @@
 /** Okabe–Ito color-blind safe palette */
 export const CB_PALETTE = [
-  '#56B4E9',
-  '#E69F00',
-  '#009E73',
-  '#F0E442',
-  '#0072B2',
-  '#D55E00',
-  '#CC79A7',
-  '#999999',
+  '#E1593C',
+  '#D9A441',
+  '#8FA68E',
+  '#C9BFA9',
+  '#B4643F',
+  '#EFE9DD',
+  '#A87C5B',
+  '#6E6A62',
 ] as const;
 
 export const SEVERITY_COLORS: Record<string, string> = {
-  malicious: '#D55E00',
-  suspicious: '#E69F00',
-  benign: '#009E73',
+  malicious: '#E1593C',
+  suspicious: '#D9A441',
+  benign: '#8FA68E',
 };
 
 export const THREAT_TYPE_LABELS: Record<string, string> = {

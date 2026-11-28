@@ -23,6 +23,28 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check the tag matches pyproject
+        # Without this, pushing v1.2.3 happily publishes whatever version
+        # pyproject.toml happens to say — and `skip-existing` hides the mismatch.
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, sys, tomllib
+
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          # Drop a pre-release suffix: v0.2.0-rc1 ships 0.2.0 to the index.
+          tag_version = re.split(r"[-+]", tag)[0]
+
+          project = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]
+          declared = project["version"]
+
+          if declared != tag_version:
+              sys.exit(
+                  f"Tag {os.environ['GITHUB_REF_NAME']} does not match pyproject version "
+                  f"{declared}. Bump `[project] version` before tagging."
+              )
+          print(f"Tag {os.environ['GITHUB_REF_NAME']} matches pyproject version {declared}")
+          PY
+
       - name: Generate changelog with git-cliff
         uses: orhun/git-cliff-action@v4
         id: changelog

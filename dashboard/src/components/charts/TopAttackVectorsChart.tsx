@@ -27,12 +27,12 @@ export function TopAttackVectorsChart({ data, onFilter }: Props) {
     >
       <ResponsiveContainer width="100%" height={chartHeight}>
         <BarChart data={data} layout="vertical" margin={{ top: 4, right: 24, left: 8, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#27272a" horizontal={false} />
-          <XAxis type="number" stroke="#a1a1aa" allowDecimals={false} />
+          <CartesianGrid strokeDasharray="3 3" stroke="#2A2320" horizontal={false} />
+          <XAxis type="number" stroke="#8A8175" allowDecimals={false} />
           <YAxis
             type="category"
             dataKey="name"
-            stroke="#a1a1aa"
+            stroke="#8A8175"
             width={130}
             tick={{ fontSize: 11 }}
           />
@@ -42,6 +42,7 @@ export function TopAttackVectorsChart({ data, onFilter }: Props) {
             formatter={(value) => formatCountTooltip(value)}
           />
           <Bar
+            isAnimationActive={false}
             dataKey="value"
             radius={[0, 4, 4, 0]}
             cursor="pointer"

@@ -1,11 +1,11 @@
 # TENET AI Integration Patterns
 
-Use `tenet_plugin` to secure **any LLM or agentic application** by placing a guard step before model execution.
+Use `tenet_firewall` to secure **any LLM or agentic application** by placing a guard step before model execution.
 
 ## 1) Universal Python Wrapper (Any SDK)
 
 ```python
-from tenet_plugin import TenetSecurityPlugin
+from tenet_firewall import TenetSecurityPlugin
 
 plugin = TenetSecurityPlugin(
     api_url="http://localhost:8000",

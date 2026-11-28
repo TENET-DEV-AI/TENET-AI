@@ -32,6 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from services.utils.logging_config import setup_logging, correlation_id_var
+from services.ingest.signins import build_router as build_signin_router
 from services.utils.env_validator import port, positive_float, positive_int, validate_env_vars
 
 logger = setup_logging(__name__)
@@ -251,6 +252,18 @@ async def redis_call(coro):
 
     await redis_cb.record_failure()
     return None
+
+
+# Sign-in log: who opened the console. Separate module so this file stays about
+# events; the router borrows our Redis plumbing and auth.
+app.include_router(
+    build_signin_router(
+        redis_getter=lambda: redis_client,
+        redis_call=redis_call,
+        security=security,
+        api_key_scheme=api_key_scheme,
+    )
+)
 
 
 def load_config() -> None:

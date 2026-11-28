@@ -1,7 +1,4 @@
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
-  PieChart, Pie, Legend,
-} from 'recharts';
+import { PieChart, Pie, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import type { ChartFilterAction } from '../../types/security';
 import type { NamedCount } from '../../utils/chartAggregations';
 import { SEVERITY_COLORS } from '../../constants/charts';
@@ -18,78 +15,67 @@ function summaryText(data: NamedCount[]): string {
   return data.map(d => `${d.name}: ${d.value}`).join(', ');
 }
 
+/**
+ * One reading of severity, not two: the donut carries the share, the legend
+ * carries the counts. The previous build drew the same numbers as a bar chart
+ * and a donut side by side, which doubled the panel for no extra information.
+ */
 export function SeverityDistributionChart({ data, onFilter }: Props) {
-  const total = data.reduce((s, d) => s + d.value, 0);
+  const total = data.reduce((sum, entry) => sum + entry.value, 0);
 
   return (
     <ChartCard
       title="Severity Distribution"
-      description={`Distribution of detections by severity level. ${summaryText(data)}. Click a segment or bar to filter by severity.`}
-      headerExtra={
-        <span className="chart-hint">Bar + donut views</span>
-      }
+      description={`Distribution of detections by severity level. ${summaryText(data)}. Click a segment to filter by severity.`}
+      headerExtra={<span className="lbl">{total} scored</span>}
     >
       <div className="severity-charts">
-        <ResponsiveContainer width="100%" height={220}>
-          <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-            <XAxis dataKey="name" stroke="#a1a1aa" />
-            <YAxis stroke="#a1a1aa" allowDecimals={false} />
-            <Tooltip
-              {...CHART_TOOLTIP_PROPS}
-              cursor={{ fill: 'rgba(59, 130, 246, 0.1)' }}
-              formatter={(value) => formatPercentTooltip(value, 'Count', total)}
-            />
-            <Bar
-              dataKey="value"
-              radius={[4, 4, 0, 0]}
-              cursor="pointer"
-              onClick={(_e, index) => {
-                const item = data[index];
-                if (item) onFilter({ verdict: item.key });
-              }}
-            >
-              {data.map(entry => (
-                <Cell key={entry.key} fill={SEVERITY_COLORS[entry.key] ?? '#999999'} />
-              ))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
+        <div className="severity-donut">
+          <ResponsiveContainer width="100%" height={200}>
+            <PieChart>
+              <Pie
+                isAnimationActive={false}
+                data={data}
+                dataKey="value"
+                nameKey="name"
+                innerRadius={54}
+                outerRadius={80}
+                paddingAngle={3}
+                stroke="none"
+                cursor="pointer"
+                onClick={(_data, index) => {
+                  const item = data[index];
+                  if (item) onFilter({ verdict: item.key });
+                }}
+              >
+                {data.map(entry => (
+                  <Cell key={entry.key} fill={SEVERITY_COLORS[entry.key] ?? '#6E6A62'} />
+                ))}
+              </Pie>
+              <Tooltip
+                {...CHART_TOOLTIP_PROPS}
+                formatter={(value, name) => formatPercentTooltip(value, String(name), total)}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="severity-center" aria-hidden="true">
+            <b>{total}</b>
+            <span>scored</span>
+          </div>
+        </div>
 
-        <ResponsiveContainer width="100%" height={220}>
-          <PieChart>
-            <Pie
-              data={data}
-              dataKey="value"
-              nameKey="name"
-              innerRadius={45}
-              outerRadius={70}
-              paddingAngle={4}
-              cursor="pointer"
-              onClick={(_data, index) => {
-                const item = data[index];
-                if (item) onFilter({ verdict: item.key });
-              }}
-            >
-              {data.map(entry => (
-                <Cell
-                  key={entry.key}
-                  fill={SEVERITY_COLORS[entry.key] ?? '#999999'}
-                  stroke="#141417"
-                  strokeWidth={2}
-                />
-              ))}
-            </Pie>
-            <Tooltip
-              {...CHART_TOOLTIP_PROPS}
-              formatter={(value, name) => formatPercentTooltip(value, String(name), total)}
-            />
-            <Legend
-              verticalAlign="bottom"
-              formatter={(value: string) => <span style={{ color: '#a1a1aa', fontSize: 12 }}>{value}</span>}
-            />
-          </PieChart>
-        </ResponsiveContainer>
+        <ul className="severity-key">
+          {data.map(entry => (
+            <li key={entry.key}>
+              <button type="button" onClick={() => onFilter({ verdict: entry.key })}>
+                <span className="sw" style={{ background: SEVERITY_COLORS[entry.key] ?? '#6E6A62' }} />
+                <span className="nm">{entry.name}</span>
+                <span className="vl">{entry.value}</span>
+                <span className="pc">{total ? Math.round((entry.value / total) * 100) : 0}%</span>
+              </button>
+            </li>
+          ))}
+        </ul>
       </div>
     </ChartCard>
   );
