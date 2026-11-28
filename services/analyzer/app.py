@@ -57,6 +57,8 @@ API_PORT = _ENV_DEFAULTS["API_PORT"]
 MODEL_PATH = _ENV_DEFAULTS["MODEL_PATH"]
 PROMPT_INJECTION_THRESHOLD = _ENV_DEFAULTS["PROMPT_INJECTION_THRESHOLD"]
 SHUTDOWN_TIMEOUT = _ENV_DEFAULTS["SHUTDOWN_TIMEOUT"]
+# Longest a cancelled event waits for Redis to take it back.
+REQUEUE_TIMEOUT = 1.0
 JEV_SETTINGS = JevSettings()
 
 # Used to decide whether a Jev answer is stricter than the local detectors.
@@ -805,7 +807,10 @@ async def _requeue_event(event_json: str, event_id: str) -> None:
         logger.error(f"Event {event_id} was interrupted and could not be requeued: no Redis client")
         return
     try:
-        await redis_client.rpush("tenet:events:queue", event_json)
+        await asyncio.wait_for(
+            redis_client.rpush("tenet:events:queue", event_json),
+            timeout=REQUEUE_TIMEOUT,
+        )
         logger.warning(f"Analysis of event {event_id} was interrupted, put it back on the queue")
     except Exception:
         logger.exception(f"Event {event_id} was interrupted and could not be requeued")
@@ -832,8 +837,10 @@ async def _process_single_event(event_json: str):
             None
 
         Raises:
-            Exception: All exceptions are caught and logged internally; this
-                coroutine never propagates to its caller.
+            asyncio.CancelledError: Re-raised after the unfinished event has
+                been put back on the queue.
+            Exception: Analysis and Redis errors are not handled here;
+                :func:`process_event_queue` catches and logs them.
 
         Note:
             This is a private helper called by :func:`process_event_queue`.
@@ -889,19 +896,20 @@ async def _process_single_event(event_json: str):
         logger.warning(f"Event {event_id} has overly long prompt ({len(prompt)} chars), truncating")
         prompt = prompt[:10000]
     
-    # Analyze the prompt
+    # rpop already took the event off the queue, and a Jev call or a Redis write
+    # can outlast SHUTDOWN_TIMEOUT, so a cancellation puts it back before the
+    # task stops. An event cut off while being stored gets processed again.
     try:
+        # Analyze the prompt
         result = await analyze_with_backends(prompt)
+
+        increment_detection(service="analyzer_bg", threat_type=result.threat_type, verdict=result.verdict)
+
+        # Update and store event
+        await _update_and_store_event(event, event_id, result)
     except asyncio.CancelledError:
-        # rpop already took the event off the queue and a Jev call can outlast
-        # SHUTDOWN_TIMEOUT, so put it back before the task stops.
         await _requeue_event(event_json, event_id)
         raise
-    
-    increment_detection(service="analyzer_bg", threat_type=result.threat_type, verdict=result.verdict)
-    
-    # Update and store event
-    await _update_and_store_event(event, event_id, result)
 
 
 async def process_event_queue():
