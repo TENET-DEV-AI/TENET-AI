@@ -799,6 +799,18 @@ async def _update_and_store_event(event: dict, event_id: str, result: AnalysisRe
         logger.warning(f"Alert: Malicious event detected - {event_id}")
 
 
+async def _requeue_event(event_json: str, event_id: str) -> None:
+    """Put an unfinished event back where :func:`process_event_queue` pops next."""
+    if not redis_client:
+        logger.error(f"Event {event_id} was interrupted and could not be requeued: no Redis client")
+        return
+    try:
+        await redis_client.rpush("tenet:events:queue", event_json)
+        logger.warning(f"Analysis of event {event_id} was interrupted, put it back on the queue")
+    except Exception:
+        logger.exception(f"Event {event_id} was interrupted and could not be requeued")
+
+
 async def _process_single_event(event_json: str):
     """Process a single event from the queue.
 
@@ -878,7 +890,13 @@ async def _process_single_event(event_json: str):
         prompt = prompt[:10000]
     
     # Analyze the prompt
-    result = await analyze_with_backends(prompt)
+    try:
+        result = await analyze_with_backends(prompt)
+    except asyncio.CancelledError:
+        # rpop already took the event off the queue and a Jev call can outlast
+        # SHUTDOWN_TIMEOUT, so put it back before the task stops.
+        await _requeue_event(event_json, event_id)
+        raise
     
     increment_detection(service="analyzer_bg", threat_type=result.threat_type, verdict=result.verdict)
     
