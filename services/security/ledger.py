@@ -117,6 +117,15 @@ def load_public_key(pem: bytes) -> Ed25519PublicKey:
     return key
 
 
+def _decode_text(raw: bytes) -> Union[str, bytes]:
+    """Hand invalid UTF-8 back as bytes, so verification reports the row instead of the read
+    raising. Replacing the bad bytes would risk making an edited record hash like the original."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw
+
+
 def _entry_hash(fields: dict[str, Any]) -> str:
     """SHA-256 over a canonical encoding of the hashed fields (sorted keys, no whitespace)."""
     payload = {name: fields[name] for name in _HASHED_FIELDS}
@@ -148,6 +157,7 @@ class ActionLedger:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path, timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
+        conn.text_factory = _decode_text
         return conn
 
     def append(
@@ -164,7 +174,16 @@ class ActionLedger:
     ) -> LedgerEntry:
         if verdict not in VERDICTS:
             raise ValueError(f"verdict must be one of {VERDICTS}, got {verdict!r}")
-        stamp = timestamp or datetime.now(timezone.utc).isoformat()
+        stamp = datetime.now(timezone.utc).isoformat() if timestamp is None else timestamp
+        # SQLite turns a number stored in a TEXT column into a string, which would then fail
+        # verification, so refuse anything that is not already a string.
+        text_fields = {
+            "entry_id": entry_id, "actor": actor, "action": action, "tool": tool,
+            "scope": scope, "reasoning": reasoning, "timestamp": stamp,
+        }
+        for name, value in text_fields.items():
+            if not isinstance(value, str):
+                raise TypeError(f"{name} must be a string, got {type(value).__name__}")
 
         with self._lock:
             conn = self._connect()

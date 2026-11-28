@@ -191,3 +191,24 @@ def test_key_pem_round_trip(tmp_path):
     led.append(entry_id="1", actor="a", action="b", tool="c", verdict="allow", reasoning="r")
     published = load_public_key(public_key_to_pem(key))
     assert led.verify(public_key=published).ok
+
+
+@pytest.mark.parametrize("field", ["entry_id", "actor", "action", "tool", "scope", "reasoning", "timestamp"])
+def test_append_refuses_non_string_fields(ledger, field):
+    values = dict(
+        entry_id="n", actor="a", action="b", tool="c", scope="s", verdict="allow", reasoning="r",
+        timestamp="2026-01-01T00:00:00+00:00",
+    )
+    values[field] = 7
+    with pytest.raises(TypeError):
+        ledger.append(**values)
+    result = ledger.verify()
+    assert result.ok and result.checked == 5
+
+
+def test_invalid_utf8_text_fails_verification_instead_of_raising(ledger):
+    conn = _db(ledger)
+    conn.execute("UPDATE ledger SET actor = CAST(X'FFFE' AS TEXT) WHERE seq = 3")
+    conn.commit()
+    result = ledger.verify()
+    assert not result.ok and result.broken_seq == 3
